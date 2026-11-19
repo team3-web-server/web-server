@@ -3,6 +3,7 @@
 #include <stdio.h>      /* perror */
 #include <sys/socket.h> /* socket, AF_INET, SOCK_STREAM */
 
+/* TCP 소켓을 하나 만들어서 그 fd 번호를 돌려주는 함수. 만들지 못하면 에러 원인을 출력하고 -1을 돌려준다. */
 int create_tcp_socket(void)
 {
     /*

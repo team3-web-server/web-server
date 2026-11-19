@@ -10,10 +10,12 @@
 
 int main(void)
 {
+    /* 소켓을 만든다 */
     int fd = create_tcp_socket();
     if (fd == -1) {
         return 1;
     }
+    /* fd 번호를 출력한다. */
     printf("socket fd = %d\n", fd);
 
     /* fd를 닫아야 커널이 소켓 객체를 해제하고 fd 테이블의 칸이 비워진다 */
