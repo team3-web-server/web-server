@@ -10,7 +10,7 @@ testbin="${2:-build/test_net}"
 fail=0
 
 echo "== 서버 실행: $bin =="
-"$bin"
+"$bin" < /dev/null   # 서버가 Enter 입력을 기다리므로 빈 입력(EOF)을 줘서 바로 끝나게 한다
 code=$?
 if [ "$code" -eq 0 ]; then
   echo "PASS: $bin 종료 코드 0"
