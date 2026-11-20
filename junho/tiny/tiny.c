@@ -86,7 +86,7 @@ void doit(int fd)
 /* 요청 헤더를 빈 줄("\r\n")까지 읽어 출력만 하고 버린다. */
 void read_requesthdrs(rio_t *rp)
 {
-    char line[MAXLINE];
+    char line[MAXLINE] = ""; /* 첫 읽기가 EOF여도 쓰레기 값을 출력하지 않도록 */
 
     do {
         Rio_readlineb(rp, line, MAXLINE);
