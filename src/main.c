@@ -20,7 +20,7 @@ int main(void)
     /* fd 번호를 출력한다. */
     printf("socket fd = %d\n", fd);
 
-    /* 소켓에 모든 IPv4 주소의 PORT번 포트를 붙인다. 실패해도 fd는 닫고 끝낸다 */
+    /* 소켓에 0.0.0.0:8080(이 컴퓨터의 모든 IPv4 주소, 8080번 포트)을 붙인다. 8080은 11줄의 PORT. 실패해도 fd는 닫고 끝낸다 */
     if (bind_port(fd, PORT) == -1) {
         close(fd);
         return 1;
