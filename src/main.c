@@ -1,14 +1,16 @@
 /*
  * 웹 서버 진입점.
- * 단계 1-2: TCP 소켓을 만들고 8080번 포트에 bind한 뒤, Enter를 누를 때까지 기다렸다가 닫는다.
- * listen/accept는 다음 조각에서 추가한다.
+ * 단계 1-3: TCP 소켓을 만들고 8080번 포트에 bind → listen → 연결 하나를 accept → 닫고 종료한다.
+ * 요청을 읽거나 응답을 보내지는 않는다. 연결을 여러 번 받는 반복도 아직 없다.
  */
 #include "net.h"
 
-#include <stdio.h>  /* printf, perror, getchar */
-#include <unistd.h> /* close */
+#include <stdio.h>      /* printf, perror, fflush */
+#include <sys/socket.h> /* SOMAXCONN */
+#include <unistd.h>     /* close */
 
 #define PORT 8080
+#define BACKLOG SOMAXCONN /* 연결 대기열 최대 길이. SOMAXCONN은 <sys/socket.h>에 정의된 시스템 상한 값 */
 
 int main(void)
 {
@@ -27,17 +29,30 @@ int main(void)
     }
     printf("bind 성공: 0.0.0.0:%d\n", PORT);
 
-    /*
-     * [임시] bind한 상태를 유지해서, 다른 터미널에서 한 번 더 실행하면
-     * "bind: Address already in use"(EADDRINUSE)가 나는 것을 볼 수 있게 한다.
-     * listen/accept가 들어오는 다음 조각에서 지운다.
-     * 입력이 없으면(make test처럼 stdin이 비어 있으면) getchar()가 EOF를 돌려줘 바로 넘어간다.
-     */
-    printf("Enter를 누르면 소켓을 닫고 종료합니다...\n");
-    fflush(stdout);
-    getchar();
+    /* 소켓을 듣기 소켓으로 바꾼다. 이때부터 커널이 8080번 포트로 오는 연결 요청을 받아 대기열에 넣는다 */
+    if (listen_port(fd, BACKLOG) == -1) {
+        close(fd);
+        return 1;
+    }
+    printf("listen 중: 연결을 기다립니다 (다른 터미널에서 curl localhost:%d)\n", PORT);
+    fflush(stdout); /* accept에서 멈추기 전에 지금까지의 출력을 화면에 내보낸다 */
 
-    /* fd를 닫아야 커널이 소켓 객체를 해제하고 fd 테이블의 칸이 비워진다 (포트도 풀린다) */
+    /* 연결 하나를 받는다. 연결이 올 때까지 여기서 멈춰 있는다. conn_fd는 그 연결 전용의 새 fd */
+    int conn_fd = accept_client(fd);
+    if (conn_fd == -1) {
+        close(fd);
+        return 1;
+    }
+
+    /* 연결 소켓을 닫는다. 커널이 클라이언트에게 FIN을 보내 연결을 끝낸다. 듣기 소켓(fd)은 아직 열려 있다 */
+    if (close(conn_fd) == -1) {
+        perror("close(conn_fd)");
+        close(fd);
+        return 1;
+    }
+    printf("연결을 닫았습니다 (conn fd = %d)\n", conn_fd);
+
+    /* 듣기 소켓을 닫는다. 커널이 소켓 객체를 해제하고 fd 테이블의 칸이 비워진다 (포트도 풀린다) */
     if (close(fd) == -1) {
         perror("close");
         return 1;
