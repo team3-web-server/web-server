@@ -2,7 +2,7 @@
  * adder.c - 두 수를 더하는 최소한의 CGI 프로그램
  * (CS:APP 그림 11.27)
  */
-#include "csapp.h"
+#include "netlib.h"
 
 int main(void) {
     char *buf, *p;

@@ -1,5 +1,5 @@
 /* echoserveri.c - 한 번에 한 클라이언트씩 처리하는 반복 에코 서버 (CS:APP 그림 11.21) */
-#include "csapp.h"
+#include "netlib.h"
 
 void echo(int connfd);
 

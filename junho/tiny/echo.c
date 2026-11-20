@@ -1,5 +1,5 @@
 /* echo.c - 연결에서 텍스트 줄을 읽어 그대로 되돌려 보낸다 (CS:APP 그림 11.22) */
-#include "csapp.h"
+#include "netlib.h"
 
 void echo(int connfd)
 {

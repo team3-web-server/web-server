@@ -1,5 +1,5 @@
 /* echoclient.c - 표준 입력의 줄을 서버에 보내고 되돌아온 줄을 출력한다 (CS:APP 그림 11.20) */
-#include "csapp.h"
+#include "netlib.h"
 
 int main(int argc, char **argv)
 {

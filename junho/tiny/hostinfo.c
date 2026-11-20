@@ -1,5 +1,5 @@
 /* hostinfo.c - 도메인 이름에 대응하는 IP 주소들을 출력한다 (CS:APP 그림 11.17) */
-#include "csapp.h"
+#include "netlib.h"
 
 int main(int argc, char **argv)
 {

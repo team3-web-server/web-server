@@ -9,7 +9,7 @@
 | `echoserveri.c`, `echo.c` | 11.21, 11.22 | 반복 에코 서버 |
 | `cgi-bin/adder.c` | 11.27 | 두 수를 더하는 CGI 프로그램 |
 | `tiny.c` | 11.29~11.35 | Tiny 웹 서버 (정적·동적 콘텐츠, GET만 지원) |
-| `csapp.h`, `csapp.c` | 10.5, 11.4.8 외 | 책 공식 사이트(csapp.cs.cmu.edu/3e/ics3/code)의 원본(2016년 10월판). 코드는 원본 그대로이고 주석만 한국어로 번역함 |
+| `netlib.h`, `netlib.c` | 10.5, 11.4.8 | 책 라이브러리 `csapp.h`/`csapp.c` 중 위 프로그램이 쓰는 것만 직접 다시 구현한 것. 함수 이름은 책과 같다 (Rio, `Open_listenfd`·`Open_clientfd`, `Accept`, `Fork` 같은 대문자 래퍼) |
 | `home.html`, `godzilla.gif` | - | Tiny의 기본 페이지와 이미지. 책 배포본 파일이 아니라 새로 만든 것 |
 
 ## 빌드와 실행
@@ -36,19 +36,12 @@ Tiny는 정적 파일을 현재 디렉터리에서 찾으므로 `junho/tiny/` �
 ./hostinfo localhost        # 127.0.0.1
 ```
 
-## csapp 원본 출처
-
-아래 SHA-256은 주석을 번역하기 전 원본 파일의 값이다. 코드가 원본과 같은지는 주석을 지운 결과(`gcc -fpreprocessed -dD -E -P`)를 원본과 비교해 확인했다.
-
-| 파일 | 받은 주소 | 원본 SHA-256 |
-|---|---|---|
-| `csapp.h` | https://csapp.cs.cmu.edu/3e/ics3/code/include/csapp.h | `7049166ef1fe57159e668c853e522c517c2d426931ac5ff41163350c2b0bbd7c` |
-| `csapp.c` | https://csapp.cs.cmu.edu/3e/ics3/code/src/csapp.c | `1e5e10a17b14dd73e2a2b4ccb02c18cf4f46bcf0e57fbf87f50616ecd00d0945` |
-
 ## 책 코드와 다른 점
 
 | 위치 | 바꾼 것 | 이유 |
 |---|---|---|
+| 모든 프로그램 | `#include "csapp.h"` → `#include "netlib.h"` | 책 라이브러리 전체(시그널·스레드·세마포어 래퍼 등 약 1000줄) 대신 필요한 함수만 담은 `netlib`을 쓴다 |
+| `netlib.c` 대문자 래퍼 | 실패 시 `exit(0)` → `exit(1)` | 원본은 실패해도 종료 코드가 0이라 스크립트·테스트가 실패를 알 수 없다 |
 | `tiny.c` `serve_static`, `clienterror`, `cgi-bin/adder.c` | `sprintf(buf, "%s...", buf, ...)`를 `sprintf(buf + strlen(buf), "...", ...)`로 | 출력 버퍼를 `%s` 인자로도 넘기면 원본과 대상이 겹쳐 정의되지 않은 동작이다. 책 그대로 `-O2`로 빌드하면 Ubuntu gcc가 켜는 `_FORTIFY_SOURCE` 때문에 앞 내용이 지워져, 정적 응답 헤더가 `Content-type` 한 줄만 나가고 adder 본문은 `Thanks for visiting!`만 남는 것을 확인했다. 줄 순서와 출력 내용은 책과 같다 |
 
 ## 책 코드의 한계 (고치지 않음)

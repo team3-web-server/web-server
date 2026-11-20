@@ -71,7 +71,6 @@ stdbuf -oL ./echoserveri "$echo_port" > "$tmp/echo.log" 2>&1 &
 pids+=($!)
 printf 'hello\nworld\n' > "$tmp/echo.in"
 # 에코 서버는 빈 연결도 EOF로 정상 처리하므로 /dev/tcp 빈 연결로 준비를 확인한다
-# (echoclient로 확인하면 안 됨: csapp 래퍼는 연결에 실패해도 exit(0)으로 끝난다)
 wait_ready bash -c "exec 3<>/dev/tcp/127.0.0.1/$echo_port" || failed "echoserveri가 포트 $echo_port에서 응답"
 kill -0 "${pids[1]}" 2>/dev/null || failed "echoserveri가 살아 있음 (포트 $echo_port를 다른 프로세스가 쓰는 중일 수 있음)"
 ./echoclient localhost "$echo_port" < "$tmp/echo.in" > "$tmp/echo.out"
