@@ -198,6 +198,7 @@ listen 중: 연결을 기다립니다 (다른 터미널에서 curl localhost:808
 (터미널 B)
 $ curl localhost:8080
 curl: (56) Recv failure: Connection reset by peer
+(실행 환경에 따라 `curl: (52) Empty reply from server`가 나오기도 한다)
 
 (터미널 A에 이어서 출력되고 종료)
 연결 수락: 클라이언트 127.0.0.1:44276 (conn fd = 4)
@@ -225,7 +226,7 @@ curl: (56) Recv failure: Connection reset by peer
 - **handshake는 커널이 한다**: `listen` 이후 3-way handshake는 커널이 끝내고 완료된 연결을 대기열에 넣는다. 그래서 단위 테스트에서 `accept`를 부르기 전인데도 `connect`가 성공한다. `accept`는 대기열에서 꺼내기만 한다.
 - **블로킹**: 대기열이 비어 있으면 `accept`는 연결이 올 때까지 돌아오지 않는다. 프로그램이 그 줄에서 멈춰 있다.
 - **값-결과 인자**: `socklen_t len`은 들어갈 때 "버퍼 크기", 나올 때 "커널이 실제로 쓴 크기"다. 그래서 값이 아니라 주소로 넘긴다.
-- **FIN과 RST**: 받은 데이터를 다 읽은(또는 받은 데이터가 없는) 연결을 `close`하면 커널이 FIN을 보내고, 상대의 `read()`는 0을 돌려받는다. 읽지 않은 데이터가 남은 채 `close`하면 커널은 RST를 보낸다. `curl`은 요청을 보내는데 우리 서버는 읽지 않고 닫으므로 `Connection reset by peer`가 나온다.
+- **FIN과 RST**: 받은 데이터를 다 읽은(또는 받은 데이터가 없는) 연결을 `close`하면 커널이 FIN을 보내고, 상대의 `read()`는 0을 돌려받는다. 읽지 않은 데이터가 남은 채 `close`하면 커널은 RST를 보낸다. `curl`은 요청을 보내는데 우리 서버는 읽지 않고 닫는다. 닫는 순간 요청이 이미 도착해 있었으면 RST가 나가 `Connection reset by peer`, 아직 도착하지 않았으면 FIN이 나가 `Empty reply from server`가 나온다.
 - **TIME_WAIT와 `SO_REUSEADDR`**: 연결을 먼저 닫은 쪽은 그 연결을 약 60초 동안 TIME_WAIT 상태로 남긴다. 그동안 같은 포트에 bind하면 `EADDRINUSE`. `SO_REUSEADDR`를 켜면 이 경우에 bind가 된다. 이미 듣고 있는 소켓이 있으면 옵션을 켜도 실패한다.
 
 #### 학습 캔버스 그림 (3. listen과 accept)
@@ -298,7 +299,7 @@ curl: (56) Recv failure: Connection reset by peer
 | `make` (`-Wall -Wextra`) | 경고 0 |
 | `make test` | PASS 16줄 (서버 1개 + 단위 테스트 15개) |
 | `make asan` | 같은 테스트 모두 PASS, 오류 없음 |
-| `curl localhost:8080` (6번) | 6번 모두 서버가 연결을 받고 종료 코드 0. `curl`은 `(56) Recv failure: Connection reset by peer`. HTTP 응답을 보내지 않으므로 의도한 결과 |
+| `curl localhost:8080` | 작업 환경(컨테이너)에서 6번: 6번 모두 서버가 연결을 받고 종료 코드 0, `curl`은 `(56) Recv failure: Connection reset by peer`. 소망 PC(WSL)에서는 `(52) Empty reply from server`. 서버가 닫는 순간 `curl`의 요청이 이미 도착해 있었으면 RST(56), 아직이면 FIN(52). 어느 쪽이든 HTTP 응답을 보내지 않으므로 의도한 결과 |
 | 데이터를 보내지 않는 연결(bash `/dev/tcp`) | 클라이언트의 읽기가 EOF로 끝남 (FIN) |
 | `valgrind --track-fds=yes --leak-check=full ./build/server` | 종료 시 열린 fd는 표준 3개뿐, 메모리 누수 0, 오류 0 |
 

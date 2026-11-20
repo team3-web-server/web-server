@@ -55,8 +55,9 @@ int main(void)
 
     /*
      * 연결 소켓을 닫는다. 커널이 연결을 끝내고, 듣기 소켓(fd)은 아직 열려 있다.
-     * 클라이언트가 보낸 데이터를 읽지 않고 닫으면 커널은 FIN 대신 RST(강제 종료)를 보낸다.
-     * 그래서 지금 curl로 접속하면 "Connection reset by peer"가 나온다. 요청을 읽는 것은 다음 단계에서 한다.
+     * 닫는 순간 클라이언트가 보낸 데이터가 이미 도착해 있는데 읽지 않았다면 커널은 FIN 대신 RST(강제 종료)를 보낸다.
+     * 그래서 지금 curl로 접속하면 "Connection reset by peer"(요청이 먼저 도착) 또는
+     * "Empty reply from server"(요청이 도착하기 전에 닫힘)가 나온다. 요청을 읽는 것은 다음 단계에서 한다.
      */
     if (close(conn_fd) == -1) {
         perror("close(conn_fd)");
