@@ -1,0 +1,36 @@
+# valgrind.sh가 쓰는 suppression: 우리 코드 문제가 아닌 것만 좁게 무시한다.
+# 각 항목은 이 컴퓨터(Ubuntu, valgrind 3.26, glibc, SSSD)에서 실제로 나온 스택을 --gen-suppressions로 뽑은 것이다.
+
+# 1) getnameinfo(flags 0)가 포트 번호로 서비스 이름을 찾을 때 시스템 SSSD 플러그인(libnss_sss)이 fstat(-1)을 부른다.
+{
+   nss_sss_getservbyport_fstat_minus1
+   CoreError:FdBadUse
+   fun:fstat
+   obj:*/libnss_sss.so.2
+   ...
+   fun:getnameinfo
+}
+
+# 2) 무한 루프 서버(tiny, echoserveri)는 SIGTERM으로 끄므로 듣기 소켓이 열린 채 끝나는 것이 정상이다.
+#    open_listenfd에서 만든 소켓만 무시한다. accept로 받은 연결 fd가 남으면 여전히 에러로 잡힌다.
+{
+   listenfd_open_when_killed
+   CoreError:FdNotClosed
+   fun:socket
+   fun:open_listenfd
+   fun:Open_listenfd
+   fun:main
+}
+
+# 3) glibc가 NSS 플러그인을 dlopen할 때 잡는 내부 메모리. 프로세스를 SIGTERM으로 끄면 possibly lost로 보인다.
+{
+   glibc_dlopen_nss_module
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:_dl_find_object_update
+   ...
+   fun:__libc_dlopen_mode
+   fun:module_load
+}
