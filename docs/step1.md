@@ -228,6 +228,56 @@ curl: (56) Recv failure: Connection reset by peer
 - **FIN과 RST**: 받은 데이터를 다 읽은(또는 받은 데이터가 없는) 연결을 `close`하면 커널이 FIN을 보내고, 상대의 `read()`는 0을 돌려받는다. 읽지 않은 데이터가 남은 채 `close`하면 커널은 RST를 보낸다. `curl`은 요청을 보내는데 우리 서버는 읽지 않고 닫으므로 `Connection reset by peer`가 나온다.
 - **TIME_WAIT와 `SO_REUSEADDR`**: 연결을 먼저 닫은 쪽은 그 연결을 약 60초 동안 TIME_WAIT 상태로 남긴다. 그동안 같은 포트에 bind하면 `EADDRINUSE`. `SO_REUSEADDR`를 켜면 이 경우에 bind가 된다. 이미 듣고 있는 소켓이 있으면 옵션을 켜도 실패한다.
 
+#### 학습 캔버스 그림 (3. listen과 accept)
+
+**1. listen(): 소켓을 듣기 상태로**
+
+![listen(): 소켓을 듣기 상태로](images/step1-3-01-listen.png)
+
+**2. 능동 소켓과 수동 소켓**
+
+![능동 소켓과 수동 소켓](images/step1-3-02-active-passive.png)
+
+**3. listen 전에 connect하면**
+
+![listen 전에 connect하면](images/step1-3-03-connect-refused.png)
+
+**4. handshake는 커널이, 결과는 대기열로**
+
+![handshake는 커널이, 결과는 대기열로](images/step1-3-04-handshake-queue.png)
+
+**5. backlog와 대기열이 가득 찼을 때**
+
+![backlog와 대기열이 가득 찼을 때](images/step1-3-05-backlog.png)
+
+**6. accept(): 대기열에서 꺼내 새 소켓 만들기**
+
+![accept(): 대기열에서 꺼내 새 소켓 만들기](images/step1-3-06-accept.png)
+
+**7. 클라이언트가 여러 명이면**
+
+![클라이언트가 여러 명이면](images/step1-3-07-many-clients.png)
+
+**8. accept의 2, 3번째 인자: 값-결과 인자**
+
+![accept의 2, 3번째 인자: 값-결과 인자](images/step1-3-08-value-result.png)
+
+**9. 주소가 필요 없으면 NULL**
+
+![주소가 필요 없으면 NULL](images/step1-3-09-null-addr.png)
+
+**10. 블로킹: accept 줄에서 멈춘다**
+
+![블로킹: accept 줄에서 멈춘다](images/step1-3-10-blocking.png)
+
+**11. 왜 동시성이 필요한가**
+
+![왜 동시성이 필요한가](images/step1-3-11-why-concurrency.png)
+
+**12. 지금 어디까지 왔나**
+
+![지금 어디까지 왔나](images/step1-3-12-lifecycle.png)
+
 ### 관찰: 재실행하면 `EADDRINUSE`
 
 `SO_REUSEADDR`를 넣기 전 코드로 확인했다.
