@@ -1,0 +1,7 @@
+# junho/ 빌드 결과물 (build/는 루트 .gitignore가 이미 제외)
+tiny/*.o
+tiny/tiny
+tiny/echoclient
+tiny/echoserveri
+tiny/hostinfo
+tiny/cgi-bin/adder

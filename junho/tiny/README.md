@@ -1,6 +1,6 @@
-# tiny/: CS:APP 11.4~11.6 예제 코드
+# junho/tiny/: CS:APP 11.4~11.6 예제 코드
 
-책(CS:APP 3판) 11장 예제를 팀 Notion 번역본 코드 그대로 옮겼다. 팀 로드맵의 서버(`src/`)와는 따로 빌드한다.
+책(CS:APP 3판) 11장 예제를 팀 Notion 번역본 코드 그대로 옮겼다. `junho/`의 단계별 서버와는 따로 빌드한다.
 
 | 파일 | 책 그림 | 내용 |
 |---|---|---|
@@ -15,12 +15,12 @@
 ## 빌드와 실행
 
 ```
-cd tiny
+cd junho/tiny
 make           # tiny, cgi-bin/adder, echoclient, echoserveri, hostinfo
 make test      # tests.sh: Tiny·adder·에코·hostinfo 동작 확인
 ```
 
-Tiny는 정적 파일을 현재 디렉터리에서 찾으므로 `tiny/` 안에서 실행한다.
+Tiny는 정적 파일을 현재 디렉터리에서 찾으므로 `junho/tiny/` 안에서 실행한다.
 
 ```
 ./tiny 8000
