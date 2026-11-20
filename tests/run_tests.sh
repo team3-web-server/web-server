@@ -23,7 +23,8 @@ echo "== 연결 하나 받고 닫기: $bin $port =="
 # 서버가 accept에서 영원히 기다리지 않게 5초 제한
 timeout 5 "$bin" "$port" &
 pid=$!
-# 서버가 listen할 때까지 최대 약 2초 재시도. 연결은 되지만 응답이 없으므로 curl은 52(Empty reply)로 끝난다
+# 서버가 listen할 때까지 최대 약 2초 재시도. 연결은 되지만 응답이 없으므로 curl은 52(Empty reply)로 끝난다.
+# 서버가 요청을 읽지 않고 닫으면 커널이 RST를 보낼 수 있어 56(Connection reset)도 정상으로 본다
 curl_code=7
 for _ in $(seq 20); do
   curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"
@@ -33,10 +34,10 @@ for _ in $(seq 20); do
 done
 wait "$pid"
 code=$?
-if [ "$curl_code" -eq 52 ]; then
+if [ "$curl_code" -eq 52 ] || [ "$curl_code" -eq 56 ]; then
   echo "PASS: curl이 연결된 뒤 빈 응답으로 끝남 (서버가 연결을 받고 닫음)"
 else
-  echo "FAIL: curl 종료 코드 $curl_code (52 = 연결 후 빈 응답이어야 함)"
+  echo "FAIL: curl 종료 코드 $curl_code (52 또는 56 = 연결된 뒤 서버가 닫음이어야 함)"
   fail=1
 fi
 if [ "$code" -eq 0 ]; then

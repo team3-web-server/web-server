@@ -45,6 +45,8 @@ static void test_parse_port(void)
     CHECK(parse_port("80x") == -1, "parse_port(\"80x\") == -1 (숫자 뒤 글자)");
     CHECK(parse_port("abc") == -1, "parse_port(\"abc\") == -1");
     CHECK(parse_port("") == -1, "parse_port(\"\") == -1");
+    CHECK(parse_port(" 80") == -1, "parse_port(\" 80\") == -1 (앞 공백)");
+    CHECK(parse_port("+80") == -1, "parse_port(\"+80\") == -1 (부호)");
     CHECK(parse_port(NULL) == -1, "parse_port(NULL) == -1");
     CHECK(parse_port("99999999999999999999") == -1, "parse_port(오버플로) == -1");
 }

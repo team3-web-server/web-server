@@ -3,6 +3,7 @@
 
 #include "net.h"
 
+#include <ctype.h>      /* isdigit */
 #include <errno.h>      /* errno */
 #include <netdb.h>      /* getaddrinfo, freeaddrinfo, gai_strerror, struct addrinfo */
 #include <stdio.h>      /* perror, fprintf */
@@ -33,7 +34,8 @@ int create_tcp_socket(void)
 
 int parse_port(const char *s)
 {
-    if (s == NULL || *s == '\0') {
+    /* strtol은 앞 공백과 '+'를 허용하므로 첫 글자가 숫자인지 따로 본다 (" 80", "+80" 거부) */
+    if (s == NULL || !isdigit((unsigned char)s[0])) {
         return -1;
     }
     char *end;

@@ -10,7 +10,7 @@
 | `src/net.c` `parse_port(s)` | 명령줄 포트 문자열을 1~65535 정수로 검사. 아니면 -1 |
 | `src/main.c` | `./build/server <port>`: 듣기 소켓을 열고 `accept`로 연결 하나를 받아 상대 주소를 출력한 뒤 연결 fd와 듣기 fd를 닫고 종료 |
 | `tests/test_net.c` | `parse_port` 경계값, `open_listenfd("0")` → `connect` → `accept`, 이미 listen 중인 포트로 다시 열면 -1 |
-| `tests/run_tests.sh` | 서버를 18080번에 띄우고 `curl`로 접속 → curl이 52(빈 응답), 서버가 종료 코드 0인지 확인 |
+| `tests/run_tests.sh` | 서버를 18080번에 띄우고 `curl`로 접속 → curl이 52(빈 응답) 또는 56(RST), 서버가 종료 코드 0인지 확인 |
 
 실행 예:
 
@@ -30,7 +30,7 @@ curl 쪽은 `curl: (52) Empty reply from server`. 요청을 읽지 않고 바로
 | `getaddrinfo` 실패는 `perror`가 아니라 `gai_strerror` | `getaddrinfo`는 `errno`를 쓰지 않고 에러 코드를 반환값으로 준다 |
 | `SO_REUSEADDR` 설정 | 서버를 끈 직후 같은 포트로 다시 켜면 이전 연결이 TIME_WAIT 상태로 남아 `bind`가 실패한다. 개발 중 재시작마다 기다리지 않게 한다 |
 | 책의 대문자 래퍼(`Getaddrinfo`, `Close`) 대신 반환값 직접 검사 | `csapp.h`를 가져오지 않았고, 래퍼는 실패하면 프로세스를 끝내 버려 테스트에서 실패 경로를 확인할 수 없다 |
-| 포트는 명령줄 인자로 받고 `parse_port`로 검사 | `"80x"`, `"0"`, `"70000"`처럼 잘못된 값이 `getaddrinfo`까지 가기 전에 사용법을 출력하고 끝낸다 |
+| 포트는 명령줄 인자로 받고 `parse_port`로 검사 | `"80x"`, `"0"`, `"70000"`, `" 80"`, `"+80"`처럼 잘못된 값이 `getaddrinfo`까지 가기 전에 사용법을 출력하고 끝낸다 |
 | `getnameinfo`에 `NI_NUMERICHOST`와 `NI_NUMERICSERV` | 도메인 이름 조회(DNS)를 하지 않아 `accept` 직후 출력이 늦어지지 않는다 |
 | 단위 테스트는 포트 `"0"` | 커널이 빈 포트를 골라 주므로 다른 프로그램과 포트가 겹쳐 테스트가 깨지지 않는다. 실제 포트는 `getsockname`으로 알아낸다 |
 
@@ -54,4 +54,5 @@ curl 쪽은 `curl: (52) Empty reply from server`. 요청을 읽지 않고 바로
 - `valgrind --track-fds=yes`: 이 컴퓨터에 valgrind가 없어 확인하지 않았다.
 - `socket`·`listen`·`accept`가 실패하는 경로는 일부러 일으키기 어려워 테스트하지 않았다 (`bind` 실패는 포트 충돌 테스트로 확인).
 - `run_tests.sh`는 18080번 포트를 쓴다. 그 포트를 다른 프로그램이 쓰고 있으면 실패한다 (세 번째 인자로 바꿀 수 있음).
+- `open_listenfd` 포트 충돌 테스트는 Linux 기본값 `net.ipv6.bindv6only = 0`을 전제로 한다. 1이거나 macOS/BSD면 `[::]`에 따로 bind가 되어 실패할 수 있다.
 - 연결 하나만 받고 끝난다. 반복 `accept`는 요청을 읽는 단계 2·3에서 붙인다.
