@@ -170,5 +170,91 @@ $ echo $?
 
 ### 아직 하지 않은 것
 
-- 다음 조각: `listen`(연결 대기열 만들기) → `accept`(연결 하나 받기). 그때 Enter 대기를 지운다.
-- 서버를 끄자마자 다시 켜면 `EADDRINUSE`가 날 수 있는 문제(`SO_REUSEADDR`)는 `listen`·`accept` 이후에 다룬다.
+- 다음 조각: `listen`(연결 대기열 만들기) → `accept`(연결 하나 받기). 그때 Enter 대기를 지운다. → 1-3에서 했다.
+- 서버를 끄자마자 다시 켜면 `EADDRINUSE`가 날 수 있는 문제(`SO_REUSEADDR`)는 `listen`·`accept` 이후에 다룬다. → 1-3에서 다뤘다.
+
+## 1-3. `listen()`·`accept()`로 연결 하나를 받아 닫기
+
+### 무엇을 만들었나
+
+| 파일 | 내용 |
+|---|---|
+| `include/net.h`, `src/net.c` | `int listen_port(int fd, int backlog)`: 소켓을 듣기 소켓으로 바꾼다. 성공 0, 실패 시 `perror("listen")` 후 -1 |
+| | `int accept_client(int fd)`: 대기열에서 연결 하나를 꺼내 새 fd를 돌려주고, 클라이언트 IP:포트를 `inet_ntop`·`ntohs`로 출력. 실패 시 `perror("accept")` 후 -1 |
+| | `int set_reuseaddr(int fd)`: `setsockopt`로 `SO_REUSEADDR`를 켠다. 성공 0, 실패 -1 |
+| `src/main.c` | socket → `set_reuseaddr` → bind → listen → accept → `close(conn_fd)` → `close(fd)`. 1-2의 임시 Enter 대기를 지웠다 |
+| `tests/test_net.c` | `SO_REUSEADDR` 켜짐 확인, listen 성공, accept 전에 connect 성공, 연결 fd가 듣기 fd와 다름, 클라이언트가 닫으면 `read()`가 0, 연결 소켓을 닫아도 듣기 소켓은 열려 있음 |
+| `tests/run_tests.sh` | 서버를 백그라운드로 띄우고 bash의 `/dev/tcp/127.0.0.1/8080`으로 연결을 한 번 건 뒤 종료 코드 0을 확인 |
+
+실행 결과:
+```
+(터미널 A)
+$ ./build/server
+socket fd = 3
+bind 성공: 0.0.0.0:8080
+listen 중: 연결을 기다립니다 (다른 터미널에서 curl localhost:8080)
+                                  ← accept에서 멈춰 있음
+
+(터미널 B)
+$ curl localhost:8080
+curl: (56) Recv failure: Connection reset by peer
+
+(터미널 A에 이어서 출력되고 종료)
+연결 수락: 클라이언트 127.0.0.1:44276 (conn fd = 4)
+연결을 닫았습니다 (conn fd = 4)
+```
+
+클라이언트 포트(44276)는 커널이 고른 임시 포트라 실행할 때마다 다르다.
+
+### 결정사항과 이유
+
+| 결정 | 이유 |
+|---|---|
+| backlog는 `SOMAXCONN` | 연결 대기열 길이를 임의의 숫자로 정하지 않고 헤더의 상한 상수를 쓴다. 실제 길이는 커널 설정 `net.core.somaxconn`이 상한이고, 그보다 큰 값은 커널이 조용히 줄인다. |
+| `accept`에 `struct sockaddr_in client`와 `socklen_t len`을 넘긴다 | 누가 접속했는지(IP:포트) 출력하려고. `len`은 값-결과 인자라 부르기 전에 `sizeof(client)`를 넣고 주소(`&len`)로 넘긴다. |
+| 주소 출력은 `inet_ntop`, 포트는 `ntohs` | 커널이 적어 준 주소는 네트워크 바이트 순서의 숫자다. 문자열과 호스트 순서 숫자로 바꿔야 사람이 읽을 수 있다. 1-2의 `htons`·`htonl`과 반대 방향. |
+| `accept`는 한 번만 부른다 | 이번 조각의 범위는 "연결 하나 받아 닫기". 연결을 계속 받는 반복은 이후 단계. |
+| `close(conn_fd)`와 `close(fd)`를 따로 한다 | 연결 소켓과 듣기 소켓은 서로 다른 fd다. 연결 소켓을 닫아도 듣기 소켓은 남고, 연결 소켓을 닫지 않으면 fd가 샌다(반복하면 `EMFILE`). |
+| `listen` 뒤, `accept` 전에 `fflush(stdout)` | `accept`에서 멈추기 전에 안내 문구가 화면에 나오게 한다. 출력이 터미널이 아니면(파이프, 파일) 버퍼에 남아 보이지 않는다. |
+| `SO_REUSEADDR`를 bind 전에 켠다 | 아래 "재실행하면 `EADDRINUSE`" 관찰 때문. 별도 함수 `set_reuseaddr`로 두어 `bind_port`의 `EADDRINUSE` 테스트(옵션 없이 두 소켓이 같은 포트)는 그대로 유지했다. |
+| 각 함수에서 `perror` 앞뒤로 `errno` 저장·복원 | 1-2에서 확인한 대로 `perror`가 `errno`를 덮어쓸 수 있다. |
+
+### 중요하다고 본 개념
+
+- **듣기 소켓과 연결 소켓**: `listen`한 소켓(fd 3)은 연결 요청을 받는 용도로만 쓴다. `accept`가 돌려주는 새 fd(fd 4)가 클라이언트 한 명과의 연결이다. 데이터를 주고받는 것은 연결 소켓으로 한다.
+- **handshake는 커널이 한다**: `listen` 이후 3-way handshake는 커널이 끝내고 완료된 연결을 대기열에 넣는다. 그래서 단위 테스트에서 `accept`를 부르기 전인데도 `connect`가 성공한다. `accept`는 대기열에서 꺼내기만 한다.
+- **블로킹**: 대기열이 비어 있으면 `accept`는 연결이 올 때까지 돌아오지 않는다. 프로그램이 그 줄에서 멈춰 있다.
+- **값-결과 인자**: `socklen_t len`은 들어갈 때 "버퍼 크기", 나올 때 "커널이 실제로 쓴 크기"다. 그래서 값이 아니라 주소로 넘긴다.
+- **FIN과 RST**: 받은 데이터를 다 읽은(또는 받은 데이터가 없는) 연결을 `close`하면 커널이 FIN을 보내고, 상대의 `read()`는 0을 돌려받는다. 읽지 않은 데이터가 남은 채 `close`하면 커널은 RST를 보낸다. `curl`은 요청을 보내는데 우리 서버는 읽지 않고 닫으므로 `Connection reset by peer`가 나온다.
+- **TIME_WAIT와 `SO_REUSEADDR`**: 연결을 먼저 닫은 쪽은 그 연결을 약 60초 동안 TIME_WAIT 상태로 남긴다. 그동안 같은 포트에 bind하면 `EADDRINUSE`. `SO_REUSEADDR`를 켜면 이 경우에 bind가 된다. 이미 듣고 있는 소켓이 있으면 옵션을 켜도 실패한다.
+
+### 관찰: 재실행하면 `EADDRINUSE`
+
+`SO_REUSEADDR`를 넣기 전 코드로 확인했다.
+
+| 순서 | 결과 |
+|---|---|
+| 서버 실행 → bash `/dev/tcp`로 연결(데이터 안 보냄) → 서버 종료 | 정상 종료 |
+| 바로 다시 실행 | `bind: Address already in use`, 종료 코드 1 |
+| 계속 재시도 | 약 63초 뒤부터 bind 성공 |
+| `set_reuseaddr` 추가 후 `make test` 두 번, `make asan` 두 번 연달아 실행 | 모두 통과 |
+| `set_reuseaddr` 추가 후, 서버가 듣고 있는 동안 한 번 더 실행 | `bind: Address already in use` (옵션을 켜도 실패) |
+| 옵션 없는 예전 실행 파일이 남긴 TIME_WAIT가 있는 동안, 옵션 있는 새 실행 파일을 실행 | `bind: Address already in use`. 리눅스는 이전 소켓과 새 소켓 둘 다 옵션이 켜져 있어야 허용했다 |
+
+### 확인한 것
+
+| 확인 | 결과 |
+|---|---|
+| `make` (`-Wall -Wextra`) | 경고 0 |
+| `make test` | PASS 16줄 (서버 1개 + 단위 테스트 15개) |
+| `make asan` | 같은 테스트 모두 PASS, 오류 없음 |
+| `curl localhost:8080` (6번) | 6번 모두 서버가 연결을 받고 종료 코드 0. `curl`은 `(56) Recv failure: Connection reset by peer`. HTTP 응답을 보내지 않으므로 의도한 결과 |
+| 데이터를 보내지 않는 연결(bash `/dev/tcp`) | 클라이언트의 읽기가 EOF로 끝남 (FIN) |
+| `valgrind --track-fds=yes --leak-check=full ./build/server` | 종료 시 열린 fd는 표준 3개뿐, 메모리 누수 0, 오류 0 |
+
+### 아직 하지 않은 것
+
+- 연결을 여러 번 받는 `accept` 반복
+- 연결 소켓에서 요청을 읽고(`read`) 응답을 보내는(`write`) 일 → 단계 2·3
+- 여러 연결을 동시에 처리 → 단계 D·6
+
