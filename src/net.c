@@ -1,10 +1,11 @@
 #include "net.h"
 
+#include <arpa/inet.h>  /* inet_ntop */
 #include <errno.h>      /* errno */
-#include <netinet/in.h> /* struct sockaddr_in, htons, htonl, INADDR_ANY */
-#include <stdio.h>      /* perror */
+#include <netinet/in.h> /* struct sockaddr_in, htons, htonl, ntohs, INADDR_ANY, INET_ADDRSTRLEN */
+#include <stdio.h>      /* perror, printf */
 #include <string.h>     /* memset */
-#include <sys/socket.h> /* socket, bind, AF_INET, SOCK_STREAM */
+#include <sys/socket.h> /* socket, bind, listen, accept, AF_INET, SOCK_STREAM, socklen_t */
 
 /* TCP 소켓을 하나 만들어서 그 fd 번호를 돌려주는 함수. 만들지 못하면 에러 원인을 출력하고 -1을 돌려준다. */
 int create_tcp_socket(void)
@@ -63,4 +64,59 @@ int bind_port(int fd, int port)
         return -1;
     }
     return 0;
+}
+
+/* bind된 소켓을 듣기 소켓으로 바꾸는 함수. 성공하면 0, 실패하면 에러 원인을 출력하고 -1을 돌려준다. */
+int listen_port(int fd, int backlog)
+{
+    /*
+     * listen(소켓 fd, 대기열 최대 길이)
+     * 커널이 이 소켓을 듣기 상태(LISTEN)로 바꾸고 연결 대기열을 만든다.
+     * 이후 클라이언트의 연결 요청은 커널이 받아서 handshake까지 끝내고 대기열에 넣어 둔다.
+     * backlog가 시스템 상한(net.core.somaxconn)보다 크면 커널이 상한으로 줄인다.
+     */
+    if (listen(fd, backlog) == -1) {
+        int saved_errno = errno; /* perror가 errno를 덮어쓸 수 있어서 저장해 둔다 */
+        perror("listen");
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
+}
+
+/* 대기열에서 연결 하나를 꺼내 그 연결의 새 fd를 돌려주는 함수. 실패하면 에러 원인을 출력하고 -1을 돌려준다. */
+int accept_client(int fd)
+{
+    /* 커널이 클라이언트의 주소(IP, 포트)를 적어 줄 구조체 변수 */
+    struct sockaddr_in client;
+
+    /*
+     * 값-결과 인자: 부를 때는 "구조체 크기가 이만큼"이라고 알려 주고,
+     * 돌아올 때는 커널이 "실제로 이만큼 적었다"로 바꿔 놓는다. 그래서 주소(&len)로 넘긴다.
+     */
+    socklen_t len = sizeof(client);
+
+    /*
+     * accept(듣기 소켓 fd, 클라이언트 주소를 받을 곳, 그 크기의 주소)
+     * 대기열에 완료된 연결이 없으면 여기서 멈춰 기다린다.
+     * 돌려주는 값은 듣기 소켓과 다른 새 fd(연결 소켓)이다.
+     */
+    int conn_fd = accept(fd, (struct sockaddr *)&client, &len);
+    if (conn_fd == -1) {
+        int saved_errno = errno;
+        perror("accept");
+        errno = saved_errno;
+        return -1;
+    }
+
+    /*
+     * 커널이 적어 준 주소는 네트워크 바이트 순서의 숫자다.
+     * inet_ntop: 32비트 IPv4 주소 숫자 → "127.0.0.1" 같은 문자열 (network to presentation)
+     * ntohs: 네트워크 순서의 16비트 포트 → 호스트 순서 (network to host short)
+     */
+    char ip[INET_ADDRSTRLEN]; /* IPv4 문자열이 들어갈 최대 길이(16) */
+    if (inet_ntop(AF_INET, &client.sin_addr, ip, sizeof(ip)) != NULL) {
+        printf("연결 수락: 클라이언트 %s:%d (conn fd = %d)\n", ip, ntohs(client.sin_port), conn_fd);
+    }
+    return conn_fd;
 }
