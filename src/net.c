@@ -36,6 +36,8 @@ int set_reuseaddr(int fd)
      * SOL_SOCKET: 소켓 자체에 대한 옵션이라는 뜻 (TCP나 IP 층의 옵션이 아님)
      * SO_REUSEADDR: TIME_WAIT 상태의 연결이 남아 있는 주소에도 bind를 허용한다
      */
+
+    /* setsockopt은 소켓의 옵션 값을 바꾸는 시스템 콜이다. */
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
         int saved_errno = errno;
         perror("setsockopt(SO_REUSEADDR)");
@@ -129,6 +131,7 @@ int accept_client(int fd)
     }
 
     /*
+     * 주소를 사람이 읽을 수 있게 바꿔 출력한다.
      * 커널이 적어 준 주소는 네트워크 바이트 순서의 숫자다.
      * inet_ntop: 32비트 IPv4 주소 숫자 → "127.0.0.1" 같은 문자열 (network to presentation)
      * ntohs: 네트워크 순서의 16비트 포트 → 호스트 순서 (network to host short)

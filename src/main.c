@@ -22,7 +22,10 @@ int main(void)
     /* fd 번호를 출력한다. */
     printf("socket fd = %d\n", fd);
 
-    /* 서버를 끄고 바로 다시 켜도 bind가 되도록 SO_REUSEADDR를 켠다. bind보다 먼저 해야 한다 */
+    /* 서버를 끄고 바로 다시 켜도 bind가 되도록 주소 재사용 허용 옵션(SO_REUSEADDR)를 켠다. bind보다 먼저 해야 한다.
+       우리 서버는 연결을 받자마자 close(conn_fd)로 먼저 닫는다. TCP에서는 먼저 닫은 쪽의 커널이 그 연결 기록을 약 60초
+       동안 TIME_WAIT 상태로 남겨 둔다. 그 기록에 8080 포트가 들어 있어서 그동안 서버를 다시 실행하면 bind가 이 주소는
+       아직 쓰는 중이라고 보고 EADDRINUSE로 실패한다. */
     if (set_reuseaddr(fd) == -1) {
         close(fd);
         return 1;
