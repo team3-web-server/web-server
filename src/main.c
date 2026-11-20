@@ -22,6 +22,12 @@ int main(void)
     /* fd 번호를 출력한다. */
     printf("socket fd = %d\n", fd);
 
+    /* 서버를 끄고 바로 다시 켜도 bind가 되도록 SO_REUSEADDR를 켠다. bind보다 먼저 해야 한다 */
+    if (set_reuseaddr(fd) == -1) {
+        close(fd);
+        return 1;
+    }
+
     /* 소켓에 모든 IPv4 주소의 PORT(8080번) 포트를 붙인다. 실패해도 fd는 닫고 끝낸다 */
     if (bind_port(fd, PORT) == -1) {
         close(fd);

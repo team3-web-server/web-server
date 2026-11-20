@@ -10,6 +10,16 @@
 int create_tcp_socket(void);
 
 /*
+ * 소켓에 SO_REUSEADDR 옵션을 켠다. bind_port()보다 먼저 불러야 한다.
+ * 서버가 연결을 먼저 닫으면 그 연결이 약 60초 동안 TIME_WAIT 상태로 남고,
+ * 그동안 서버를 다시 실행하면 bind가 EADDRINUSE로 실패한다. 이 옵션을 켜면 그 경우에도 bind가 된다.
+ * (같은 포트에 이미 듣고 있는 소켓이 있으면 이 옵션을 켜도 EADDRINUSE로 실패한다.)
+ * 성공: 0
+ * 실패: perror로 errno 내용을 stderr에 출력하고 -1을 반환
+ */
+int set_reuseaddr(int fd);
+
+/*
  * 소켓 fd에 "모든 IPv4 주소(INADDR_ANY)의 port번 포트"를 붙인다(bind).
  * 성공: 0
  * 실패: perror로 errno 내용을 stderr에 출력하고 -1을 반환

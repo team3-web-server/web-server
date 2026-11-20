@@ -9,7 +9,7 @@
 #include <netinet/in.h> /* struct sockaddr_in, INADDR_LOOPBACK */
 #include <stdio.h>
 #include <string.h>     /* memset */
-#include <sys/socket.h> /* connect, SOMAXCONN */
+#include <sys/socket.h> /* connect, getsockopt, SOMAXCONN */
 #include <unistd.h>     /* close, read */
 
 /* 테스트용 포트. 서버 기본 포트(8080)가 다른 프로그램에 잡혀 있어도 테스트가 깨지지 않게 따로 둔다 */
@@ -71,6 +71,23 @@ static void test_bind_port_in_use(void)
     close(first);
 }
 
+static void test_set_reuseaddr(void)
+{
+    int fd = create_tcp_socket();
+    if (fd < 0) {
+        CHECK(0, "set_reuseaddr 테스트용 소켓 생성");
+        return;
+    }
+    CHECK(set_reuseaddr(fd) == 0, "set_reuseaddr()가 0을 반환");
+
+    /* getsockopt로 커널에 실제로 옵션이 켜졌는지 되물어 본다 (켜져 있으면 0이 아닌 값) */
+    int value = 0;
+    socklen_t len = sizeof(value);
+    int ret = getsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &value, &len);
+    CHECK(ret == 0 && value != 0, "getsockopt로 읽은 SO_REUSEADDR 값이 켜져 있음");
+    close(fd);
+}
+
 static void test_listen_port(void)
 {
     int fd = create_tcp_socket();
@@ -129,6 +146,7 @@ int main(void)
     test_create_tcp_socket();
     test_bind_port();
     test_bind_port_in_use();
+    test_set_reuseaddr();
     test_listen_port();
     test_accept_client();
     return failures == 0 ? 0 : 1;

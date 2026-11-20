@@ -5,7 +5,7 @@
 #include <netinet/in.h> /* struct sockaddr_in, htons, htonl, ntohs, INADDR_ANY, INET_ADDRSTRLEN */
 #include <stdio.h>      /* perror, printf */
 #include <string.h>     /* memset */
-#include <sys/socket.h> /* socket, bind, listen, accept, AF_INET, SOCK_STREAM, socklen_t */
+#include <sys/socket.h> /* socket, setsockopt, bind, listen, accept, AF_INET, SOCK_STREAM, socklen_t */
 
 /* TCP 소켓을 하나 만들어서 그 fd 번호를 돌려주는 함수. 만들지 못하면 에러 원인을 출력하고 -1을 돌려준다. */
 int create_tcp_socket(void)
@@ -24,6 +24,25 @@ int create_tcp_socket(void)
         return -1;
     }
     return fd;
+}
+
+/* 서버를 바로 다시 실행해도 bind가 되도록 SO_REUSEADDR 옵션을 켜는 함수. 성공하면 0, 실패하면 -1을 돌려준다. */
+int set_reuseaddr(int fd)
+{
+    int on = 1; /* 옵션 값: 1은 켠다, 0은 끈다 */
+
+    /*
+     * setsockopt(소켓 fd, 옵션이 속한 층, 옵션 이름, 옵션 값의 주소, 옵션 값의 크기)
+     * SOL_SOCKET: 소켓 자체에 대한 옵션이라는 뜻 (TCP나 IP 층의 옵션이 아님)
+     * SO_REUSEADDR: TIME_WAIT 상태의 연결이 남아 있는 주소에도 bind를 허용한다
+     */
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+        int saved_errno = errno;
+        perror("setsockopt(SO_REUSEADDR)");
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
 }
 
 /* 소켓에 IP 주소와 포트를 붙이는 함수. 성공하면 0, 실패하면 에러 원인을 출력하고 -1을 돌려준다. */
