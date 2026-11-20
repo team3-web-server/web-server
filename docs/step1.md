@@ -170,5 +170,162 @@ $ echo $?
 
 ### 아직 하지 않은 것
 
-- 다음 조각: `listen`(연결 대기열 만들기) → `accept`(연결 하나 받기). 그때 Enter 대기를 지운다.
-- 서버를 끄자마자 다시 켜면 `EADDRINUSE`가 날 수 있는 문제(`SO_REUSEADDR`)는 `listen`·`accept` 이후에 다룬다.
+- 다음 조각: `listen`(연결 대기열 만들기) → `accept`(연결 하나 받기). 그때 Enter 대기를 지운다. → 1-3에서 했다.
+- 서버를 끄자마자 다시 켜면 `EADDRINUSE`가 날 수 있는 문제(`SO_REUSEADDR`)는 `listen`·`accept` 이후에 다룬다. → 1-3에서 다뤘다.
+
+## 1-3. `listen()`·`accept()`로 연결 하나를 받아 닫기
+
+### 무엇을 만들었나
+
+| 파일 | 내용 |
+|---|---|
+| `include/net.h`, `src/net.c` | `int listen_port(int fd, int backlog)`: 소켓을 듣기 소켓으로 바꾼다. 성공 0, 실패 시 `perror("listen")` 후 -1 |
+| | `int accept_client(int fd)`: 대기열에서 연결 하나를 꺼내 새 fd를 돌려주고, 클라이언트 IP:포트를 `inet_ntop`·`ntohs`로 출력. 실패 시 `perror("accept")` 후 -1 |
+| | `int set_reuseaddr(int fd)`: `setsockopt`로 `SO_REUSEADDR`를 켠다. 성공 0, 실패 -1 |
+| `src/main.c` | socket → `set_reuseaddr` → bind → listen → accept → `close(conn_fd)` → `close(fd)`. 1-2의 임시 Enter 대기를 지웠다 |
+| `tests/test_net.c` | `SO_REUSEADDR` 켜짐 확인, listen 성공, accept 전에 connect 성공, 연결 fd가 듣기 fd와 다름, 클라이언트가 닫으면 `read()`가 0, 연결 소켓을 닫아도 듣기 소켓은 열려 있음 |
+| `tests/run_tests.sh` | 서버를 백그라운드로 띄우고 bash의 `/dev/tcp/127.0.0.1/8080`으로 연결을 한 번 건 뒤 종료 코드 0을 확인 |
+| `demo/`, `Makefile`의 `make demo` | 여섯 가지 상황을 직접 보는 시연용 프로그램 (`listen_demo`, `connect_demo`, `watch_retrans.sh`). 서버 본체와 따로 빌드 |
+
+실행 결과:
+```
+(터미널 A)
+$ ./build/server
+socket fd = 3
+bind 성공: 0.0.0.0:8080
+listen 중: 연결을 기다립니다 (다른 터미널에서 curl localhost:8080)
+                                  ← accept에서 멈춰 있음
+
+(터미널 B)
+$ curl localhost:8080
+curl: (56) Recv failure: Connection reset by peer
+(실행 환경에 따라 `curl: (52) Empty reply from server`가 나오기도 한다)
+
+(터미널 A에 이어서 출력되고 종료)
+연결 수락: 클라이언트 127.0.0.1:44276 (conn fd = 4)
+연결을 닫았습니다 (conn fd = 4)
+```
+
+클라이언트 포트(44276)는 커널이 고른 임시 포트라 실행할 때마다 다르다.
+
+### 결정사항과 이유
+
+| 결정 | 이유 |
+|---|---|
+| backlog는 `SOMAXCONN` | 연결 대기열 길이를 임의의 숫자로 정하지 않고 헤더의 상한 상수를 쓴다. 실제 길이는 커널 설정 `net.core.somaxconn`이 상한이고, 그보다 큰 값은 커널이 조용히 줄인다. |
+| `accept`에 `struct sockaddr_in client`와 `socklen_t len`을 넘긴다 | 누가 접속했는지(IP:포트) 출력하려고. `len`은 값-결과 인자라 부르기 전에 `sizeof(client)`를 넣고 주소(`&len`)로 넘긴다. |
+| 주소 출력은 `inet_ntop`, 포트는 `ntohs` | 커널이 적어 준 주소는 네트워크 바이트 순서의 숫자다. 문자열과 호스트 순서 숫자로 바꿔야 사람이 읽을 수 있다. 1-2의 `htons`·`htonl`과 반대 방향. |
+| `accept`는 한 번만 부른다 | 이번 조각의 범위는 "연결 하나 받아 닫기". 연결을 계속 받는 반복은 이후 단계. |
+| `close(conn_fd)`와 `close(fd)`를 따로 한다 | 연결 소켓과 듣기 소켓은 서로 다른 fd다. 연결 소켓을 닫아도 듣기 소켓은 남고, 연결 소켓을 닫지 않으면 fd가 샌다(반복하면 `EMFILE`). |
+| `listen` 뒤, `accept` 전에 `fflush(stdout)` | `accept`에서 멈추기 전에 안내 문구가 화면에 나오게 한다. 출력이 터미널이 아니면(파이프, 파일) 버퍼에 남아 보이지 않는다. |
+| `SO_REUSEADDR`를 bind 전에 켠다 | 아래 "재실행하면 `EADDRINUSE`" 관찰 때문. 별도 함수 `set_reuseaddr`로 두어 `bind_port`의 `EADDRINUSE` 테스트(옵션 없이 두 소켓이 같은 포트)는 그대로 유지했다. |
+| 각 함수에서 `perror` 앞뒤로 `errno` 저장·복원 | 1-2에서 확인한 대로 `perror`가 `errno`를 덮어쓸 수 있다. |
+
+### 중요하다고 본 개념
+
+- **듣기 소켓과 연결 소켓**: `listen`한 소켓(fd 3)은 연결 요청을 받는 용도로만 쓴다. `accept`가 돌려주는 새 fd(fd 4)가 클라이언트 한 명과의 연결이다. 데이터를 주고받는 것은 연결 소켓으로 한다.
+- **handshake는 커널이 한다**: `listen` 이후 3-way handshake는 커널이 끝내고 완료된 연결을 대기열에 넣는다. 그래서 단위 테스트에서 `accept`를 부르기 전인데도 `connect`가 성공한다. `accept`는 대기열에서 꺼내기만 한다.
+- **블로킹**: 대기열이 비어 있으면 `accept`는 연결이 올 때까지 돌아오지 않는다. 프로그램이 그 줄에서 멈춰 있다.
+- **값-결과 인자**: `socklen_t len`은 들어갈 때 "버퍼 크기", 나올 때 "커널이 실제로 쓴 크기"다. 그래서 값이 아니라 주소로 넘긴다.
+- **FIN과 RST**: 받은 데이터를 다 읽은(또는 받은 데이터가 없는) 연결을 `close`하면 커널이 FIN을 보내고, 상대의 `read()`는 0을 돌려받는다. 읽지 않은 데이터가 남은 채 `close`하면 커널은 RST를 보낸다. `curl`은 요청을 보내는데 우리 서버는 읽지 않고 닫는다. 닫는 순간 요청이 이미 도착해 있었으면 RST가 나가 `Connection reset by peer`, 아직 도착하지 않았으면 FIN이 나가 `Empty reply from server`가 나온다.
+- **TIME_WAIT와 `SO_REUSEADDR`**: 연결을 먼저 닫은 쪽은 그 연결을 약 60초 동안 TIME_WAIT 상태로 남긴다. 그동안 같은 포트에 bind하면 `EADDRINUSE`. `SO_REUSEADDR`를 켜면 이 경우에 bind가 된다. 이미 듣고 있는 소켓이 있으면 옵션을 켜도 실패한다.
+
+#### 학습 캔버스 그림 (3. listen과 accept)
+
+**1. listen(): 소켓을 듣기 상태로**
+
+![listen(): 소켓을 듣기 상태로](images/step1-3-01-listen.png)
+
+**2. 능동 소켓과 수동 소켓**
+
+![능동 소켓과 수동 소켓](images/step1-3-02-active-passive.png)
+
+**3. listen 전에 connect하면**
+
+![listen 전에 connect하면](images/step1-3-03-connect-refused.png)
+
+**4. handshake는 커널이, 결과는 대기열로**
+
+![handshake는 커널이, 결과는 대기열로](images/step1-3-04-handshake-queue.png)
+
+**5. backlog와 대기열이 가득 찼을 때**
+
+![backlog와 대기열이 가득 찼을 때](images/step1-3-05-backlog.png)
+
+**6. accept(): 대기열에서 꺼내 새 소켓 만들기**
+
+![accept(): 대기열에서 꺼내 새 소켓 만들기](images/step1-3-06-accept.png)
+
+**7. 클라이언트가 여러 명이면**
+
+![클라이언트가 여러 명이면](images/step1-3-07-many-clients.png)
+
+**8. accept의 2, 3번째 인자: 값-결과 인자**
+
+![accept의 2, 3번째 인자: 값-결과 인자](images/step1-3-08-value-result.png)
+
+**9. 주소가 필요 없으면 NULL**
+
+![주소가 필요 없으면 NULL](images/step1-3-09-null-addr.png)
+
+**10. 블로킹: accept 줄에서 멈춘다**
+
+![블로킹: accept 줄에서 멈춘다](images/step1-3-10-blocking.png)
+
+**11. 왜 동시성이 필요한가**
+
+![왜 동시성이 필요한가](images/step1-3-11-why-concurrency.png)
+
+**12. 지금 어디까지 왔나**
+
+![지금 어디까지 왔나](images/step1-3-12-lifecycle.png)
+
+### 관찰: 재실행하면 `EADDRINUSE`
+
+`SO_REUSEADDR`를 넣기 전 코드로 확인했다.
+
+| 순서 | 결과 |
+|---|---|
+| 서버 실행 → bash `/dev/tcp`로 연결(데이터 안 보냄) → 서버 종료 | 정상 종료 |
+| 바로 다시 실행 | `bind: Address already in use`, 종료 코드 1 |
+| 계속 재시도 | 약 63초 뒤부터 bind 성공 |
+| `set_reuseaddr` 추가 후 `make test` 두 번, `make asan` 두 번 연달아 실행 | 모두 통과 |
+| `set_reuseaddr` 추가 후, 서버가 듣고 있는 동안 한 번 더 실행 | `bind: Address already in use` (옵션을 켜도 실패) |
+| 옵션 없는 예전 실행 파일이 남긴 TIME_WAIT가 있는 동안, 옵션 있는 새 실행 파일을 실행 | `bind: Address already in use`. 리눅스는 이전 소켓과 새 소켓 둘 다 옵션이 켜져 있어야 허용했다 |
+
+### 1-3 시연: 여섯 가지 상황 직접 보기
+
+`build/server`는 연결을 받자마자 닫고 끝나서 중간 상태를 볼 수 없다. 그래서 중간에 Enter를 기다리는 시연용 프로그램을 `demo/`에 따로 두었다. 아래 출력과 숫자는 작업 환경(리눅스 커널 6.18 컨테이너)에서 잰 값이고, 다른 PC에서는 다를 수 있다.
+
+준비: 레포 루트에서 `make demo`. 터미널 세 개(A 서버, B 클라이언트, C 관찰)를 열고 모두 레포 루트로 이동한다.
+
+| 상황 | 실행 | 확인할 것 |
+|---|---|---|
+| 1. backlog는 대기열의 최대 길이 | A: `./build/listen_demo 2` (Enter 누르지 않음) → B: `./build/connect_demo 5` | `accept`를 한 번도 부르지 않았는데 연결 1~3은 `성공 (0.00초 걸림)`, 연결 4에서 멈춘다. 리눅스는 backlog + 1개까지 받았다 |
+| 5. 대기열이 가득 차면 SYN을 버리고, 클라이언트 커널이 재전송 | 상황 1을 시작하기 전에 C: `bash demo/watch_retrans.sh` | B가 `connect()`에서 멈춰 있는 동안 C에 `재전송 N번째` 줄이 늘어난다. 잰 시각: 1.0, 2.1, 3.1, 4.1, 5.1, 7.1, 11.3, 19.5초. 이 상태에서 A에서 Enter를 누르면 자리가 나서 B의 연결 4가 `성공 (5.10초 걸림)`처럼 찍힌다 |
+| 4. 대기열이 비어 있으면 `accept`가 멈춘다 | (모두 끄고) A: `./build/listen_demo 2` 실행 후 바로 Enter → C: `ps -o pid,stat,pcpu,wchan:20,cmd -p $(pgrep listen_demo)` | A는 `[2] accept(fd, NULL, NULL) 호출...`에서 멈춘다. `ps`에 `STAT` S(sleeping), `%CPU` 0.0, `WCHAN` `inet_csk_accept` |
+| 6. `accept` 뒤 fd 3과 4는 서로 다른 소켓 객체 | 상황 4에서 이어서 B: `./build/connect_demo 1` → C: `ls -l /proc/$(pgrep listen_demo)/fd` 와 `lsof -a -p $(pgrep listen_demo) -i -P -n` | A가 `accept 반환: 연결 소켓 fd = 4`를 찍는다. `3 -> socket:[10406]`, `4 -> socket:[14671]`처럼 번호가 다르다. `lsof`에는 3번이 `*:9090 (LISTEN)`, 4번이 `127.0.0.1:9090->127.0.0.1:55628 (ESTABLISHED)` |
+| 3. 주소가 필요 없으면 `NULL` | `demo/listen_demo.c`의 `accept(fd, NULL, NULL)`과 `src/net.c`의 `accept(fd, (struct sockaddr *)&client, &len)`을 비교 | 상황 6에서 주소를 받지 않고도 fd 4를 받았다. `NULL` 쪽은 클라이언트 IP:포트를 알 수 없다 |
+| 2. backlog가 상한보다 크면 조용히 잘린다 | A: `cat /proc/sys/net/core/somaxconn` (4096) → A: `ulimit -n 6000 && ./build/listen_demo 100000` → B: `ulimit -n 6000 && ./build/connect_demo 4100` | `listen(fd, 100000) 반환값 = 0`으로 에러가 없다. 연결 4097까지 성공하고 4098에서 멈춘다 (상한 4096 + 1) |
+
+각 상황이 끝나면 A·B는 Enter 또는 Ctrl+C, C는 Ctrl+C로 끈다. `bind: Address already in use`가 나오면 이전 `listen_demo`가 남아 있는 것이니 `pkill listen_demo` 후 다시 한다.
+
+재전송 간격에 대해: 처음 다섯 번이 1초 간격이고 그 뒤 2초, 4초, 8초로 늘어났다. 이 커널은 `net.ipv4.tcp_syn_linear_timeouts`가 4다. 학습 캔버스 5번 그림의 "1초, 2초, 4초, 8초(0, 1, 3, 7, 15초)"와 다르므로, 각자 PC에서 잰 값으로 확인한다.
+
+### 확인한 것
+
+| 확인 | 결과 |
+|---|---|
+| `make` (`-Wall -Wextra`) | 경고 0 |
+| `make test` | PASS 16줄 (서버 1개 + 단위 테스트 15개) |
+| `make asan` | 같은 테스트 모두 PASS, 오류 없음 |
+| `curl localhost:8080` | 작업 환경(컨테이너)에서 6번: 6번 모두 서버가 연결을 받고 종료 코드 0, `curl`은 `(56) Recv failure: Connection reset by peer`. 소망 PC(WSL)에서는 `(52) Empty reply from server`. 서버가 닫는 순간 `curl`의 요청이 이미 도착해 있었으면 RST(56), 아직이면 FIN(52). 어느 쪽이든 HTTP 응답을 보내지 않으므로 의도한 결과 |
+| 데이터를 보내지 않는 연결(bash `/dev/tcp`) | 클라이언트의 읽기가 EOF로 끝남 (FIN) |
+| `valgrind --track-fds=yes --leak-check=full ./build/server` | 종료 시 열린 fd는 표준 3개뿐, 메모리 누수 0, 오류 0 |
+
+### 아직 하지 않은 것
+
+- 연결을 여러 번 받는 `accept` 반복
+- 연결 소켓에서 요청을 읽고(`read`) 응답을 보내는(`write`) 일 → 단계 2·3
+- 여러 연결을 동시에 처리 → 단계 D·6
+
