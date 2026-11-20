@@ -39,7 +39,6 @@ int bind_port(int fd, int port)
     /*
      * 네트워크는 큰 쪽 바이트부터 보내는 빅엔디언(네트워크 바이트 순서)을 쓴다.
      * x86 CPU는 리틀엔디언이라 그대로 넣으면 바이트가 뒤집힌다.
-     * htons = host to network short (16비트 포트), htonl = host to network long (32비트 주소)
      * 예) 8080 = 0x1F90 → 메모리에 1F 90 순서로 들어가야 한다.
      *
      * htons = host to network short, 호스트 순서의 16비트 값을 네트워크 순서로 바꾼다.
