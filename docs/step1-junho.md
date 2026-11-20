@@ -1,21 +1,21 @@
 # 단계 1 (junho): 듣기 소켓을 열고 연결 하나를 받아 닫기
 
-참고: CS:APP 11.4 소켓 인터페이스 (팀 Notion 번역본). `docs/step1.md`의 1-1(`socket`)에 이어 `bind`·`listen`·`accept`까지 한 번에 구현했다.
+참고: CS:APP 11.4 소켓 인터페이스 (팀 Notion 번역본). 코드는 `junho/` 폴더에 있고, 그 안에서 `make`, `make test`, `make asan`을 실행한다. `docs/step1.md`의 1-1(`socket`)에 이어 `bind`·`listen`·`accept`까지 한 번에 구현했다.
 
 ## 무엇을 만들었나
 
 | 파일 | 내용 |
 |---|---|
-| `src/net.c` `open_listenfd(port)` | CS:APP 그림 11.19와 같은 구조. `getaddrinfo(NULL, port, AI_PASSIVE…)`로 주소 목록을 받아 `socket` → `setsockopt(SO_REUSEADDR)` → `bind`를 성공할 때까지 시도하고, `listen`해서 듣기 fd를 반환. 실패하면 원인 출력 후 -1 |
-| `src/net.c` `parse_port(s)` | 명령줄 포트 문자열을 1~65535 정수로 검사. 아니면 -1 |
-| `src/main.c` | `./build/server <port>`: 듣기 소켓을 열고 `accept`로 연결 하나를 받아 상대 주소를 출력한 뒤 연결 fd와 듣기 fd를 닫고 종료 |
-| `tests/test_net.c` | `parse_port` 경계값, `open_listenfd("0")` → `connect` → `accept`, 이미 listen 중인 포트로 다시 열면 -1 |
-| `tests/run_tests.sh` | 서버를 18080번에 띄우고 `curl`로 접속 → curl이 52(빈 응답) 또는 56(RST), 서버가 종료 코드 0인지 확인 |
+| `junho/src/net.c` `open_listenfd(port)` | CS:APP 그림 11.19와 같은 구조. `getaddrinfo(NULL, port, AI_PASSIVE…)`로 주소 목록을 받아 `socket` → `setsockopt(SO_REUSEADDR)` → `bind`를 성공할 때까지 시도하고, `listen`해서 듣기 fd를 반환. 실패하면 원인 출력 후 -1 |
+| `junho/src/net.c` `parse_port(s)` | 명령줄 포트 문자열을 1~65535 정수로 검사. 아니면 -1 |
+| `junho/src/main.c` | `./build/server <port>`: 듣기 소켓을 열고 `accept`로 연결 하나를 받아 상대 주소를 출력한 뒤 연결 fd와 듣기 fd를 닫고 종료 |
+| `junho/tests/test_net.c` | `parse_port` 경계값, `open_listenfd("0")` → `connect` → `accept`, 이미 listen 중인 포트로 다시 열면 -1 |
+| `junho/tests/run_tests.sh` | 서버를 18080번에 띄우고 `curl`로 접속 → curl이 52(빈 응답) 또는 56(RST), 서버가 종료 코드 0인지 확인 |
 
 실행 예:
 
 ```
-$ ./build/server 8080            # 다른 터미널에서: curl http://localhost:8080/
+$ cd junho && ./build/server 8080            # 다른 터미널에서: curl http://localhost:8080/
 listening on port 8080 (listenfd = 3)
 accepted (127.0.0.1, 46632) connfd = 4
 ```

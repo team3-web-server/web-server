@@ -106,6 +106,7 @@
 | `src/` | 서버의 C 소스 코드(`.c`)를 둔다. `make`가 여기 있는 `.c` 파일을 모두 컴파일한다. | `main.c` (프로그램 진입점) |
 | `include/` | 여러 `.c` 파일이 함께 쓰는 헤더(`.h`)를 둔다. `Makefile`의 `-Iinclude` 옵션으로 `#include` 검색 경로에 들어간다. | 아직 없음 (빈 폴더를 git에 남기려고 `.gitkeep`만 있음) |
 | `tests/` | 테스트 코드와 테스트 실행 스크립트를 둔다. `make test`와 `make asan`이 여기 스크립트를 실행한다. | `run_tests.sh` (실행 파일이 종료 코드 0으로 끝나는지 검사) |
+| `junho/` | 준호가 따로 개발하는 단계별 서버. 안의 구조(`src/`, `include/`, `tests/`, `Makefile`)는 루트와 같고, `junho/` 안에서 `make test`로 빌드·검사한다. | 단계 1 서버(`open_listenfd`, `accept` 한 번) |
 | `tiny/` | CS:APP 11.4~11.6 예제(Tiny 웹 서버, 에코, hostinfo, adder)를 책 코드대로 옮긴 참고용 코드. 자체 `Makefile`로 따로 빌드한다. | `tiny.c`, `csapp.c`, `README.md` |
 | `scripts/` | 개발을 돕는 셸 스크립트를 둔다. 서버 코드에는 포함되지 않는다. | `check-env.sh` (gcc, make, valgrind, curl 등 필요한 도구가 설치됐는지 점검) |
 | `docs/` | 설계 문서를 둔다. | `design.md` (이 문서) |
