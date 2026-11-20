@@ -28,20 +28,25 @@ int create_tcp_socket(void)
 /* 소켓에 IP 주소와 포트를 붙이는 함수. 성공하면 0, 실패하면 에러 원인을 출력하고 -1을 돌려준다. */
 int bind_port(int fd, int port)
 {
+    /* 포트와 IP 주소 값을 담는 구조체 변수를 선언한다. */
     struct sockaddr_in addr;
 
     /* 쓰지 않는 칸(sin_zero 등)에 쓰레기 값이 남지 않도록 구조체 전체를 0으로 채운다 */
     memset(&addr, 0, sizeof(addr));
 
-    addr.sin_family = AF_INET; /* IPv4 주소라는 표시 (socket()의 AF_INET과 맞춘다) */
+    addr.sin_family = AF_INET; /* 주소 체계(형식) 표시, 이 구조체는 IPv4 주소 라는 것을 알린다. */
 
     /*
      * 네트워크는 큰 쪽 바이트부터 보내는 빅엔디언(네트워크 바이트 순서)을 쓴다.
      * x86 CPU는 리틀엔디언이라 그대로 넣으면 바이트가 뒤집힌다.
      * htons = host to network short (16비트 포트), htonl = host to network long (32비트 주소)
      * 예) 8080 = 0x1F90 → 메모리에 1F 90 순서로 들어가야 한다.
+     *
+     * htons = host to network short, 호스트 순서의 16비트 값을 네트워크 순서로 바꾼다.
      */
     addr.sin_port = htons((unsigned short)port);
+
+    /* htonl = host to network long, 호스트(내 CPU) 바이트 순서의 32비트 값을 네트워크 바이트 순서로 바꾼다. */
     addr.sin_addr.s_addr = htonl(INADDR_ANY); /* 0.0.0.0: 이 컴퓨터의 모든 IPv4 주소로 오는 연결을 받는다 */
 
     /*
