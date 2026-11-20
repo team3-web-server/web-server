@@ -34,13 +34,15 @@ stdbuf -oL ./tiny "$port" > "$tmp/tiny.log" 2>&1 &
 pids+=($!)
 url="http://127.0.0.1:$port"
 wait_ready curl -s -o /dev/null "$url/" || { failed "tiny가 포트 $port에서 응답"; exit 1; }
+# 포트를 이미 다른 프로세스가 잡고 있으면 우리 tiny는 Open_listenfd 에러로 끝나고 응답은 그 프로세스가 한다
+kill -0 "${pids[0]}" 2>/dev/null || { failed "tiny가 살아 있음 (포트 $port를 다른 프로세스가 쓰는 중일 수 있음: $(cat "$tmp/tiny.log"))"; exit 1; }
 
 # 정적 콘텐츠: / → ./home.html
 code=$(curl -s -o "$tmp/home" -D "$tmp/home.h" -w '%{http_code}' "$url/")
 check "GET / → 200" '[ "$code" = 200 ]'
 check "GET / 본문이 home.html과 같음" 'cmp -s "$tmp/home" home.html'
 check "GET / Content-type: text/html" 'grep -q "^Content-type: text/html" "$tmp/home.h"'
-check "GET / Content-length가 파일 크기" 'grep -q "^Content-length: $(stat -c %s home.html)" "$tmp/home.h"'
+check "GET / Content-length가 파일 크기" 'grep -qx "Content-length: $(stat -c %s home.html)"$'"'"'\r'"'"' "$tmp/home.h"'
 
 # 정적 콘텐츠: 이미지 (mmap으로 보낸 바이트가 파일과 같은지)
 code=$(curl -s -o "$tmp/gif" -D "$tmp/gif.h" -w '%{http_code}' "$url/godzilla.gif")
@@ -52,7 +54,7 @@ check "GET /godzilla.gif Content-type: image/gif" 'grep -q "^Content-type: image
 code=$(curl -s -o "$tmp/add" -D "$tmp/add.h" -w '%{http_code}' "$url/cgi-bin/adder?15000&213")
 check "GET /cgi-bin/adder?15000&213 → 200" '[ "$code" = 200 ]'
 check "adder 본문에 15000 + 213 = 15213" 'grep -q "The answer is: 15000 + 213 = 15213" "$tmp/add"'
-check "adder Content-length: 115 (책 그림 11.28)" 'grep -q "^Content-length: 115" "$tmp/add.h"'
+check "adder Content-length: 115 (책 그림 11.28)" 'grep -qx "Content-length: 115"$'"'"'\r'"'"' "$tmp/add.h"'
 check "adder 본문 크기가 115바이트" '[ "$(stat -c %s "$tmp/add")" = 115 ]'
 
 # 에러 응답
@@ -71,9 +73,9 @@ printf 'hello\nworld\n' > "$tmp/echo.in"
 # 에코 서버는 빈 연결도 EOF로 정상 처리하므로 /dev/tcp 빈 연결로 준비를 확인한다
 # (echoclient로 확인하면 안 됨: csapp 래퍼는 연결에 실패해도 exit(0)으로 끝난다)
 wait_ready bash -c "exec 3<>/dev/tcp/127.0.0.1/$echo_port" || failed "echoserveri가 포트 $echo_port에서 응답"
+kill -0 "${pids[1]}" 2>/dev/null || failed "echoserveri가 살아 있음 (포트 $echo_port를 다른 프로세스가 쓰는 중일 수 있음)"
 ./echoclient localhost "$echo_port" < "$tmp/echo.in" > "$tmp/echo.out"
 check "echoclient 출력이 입력과 같음" 'cmp -s "$tmp/echo.in" "$tmp/echo.out"'
-sleep 0.2
 check "echoserveri가 6바이트씩 두 번 받음" '[ "$(grep -c "server received 6 bytes" "$tmp/echo.log")" = 2 ]'
 
 # hostinfo
