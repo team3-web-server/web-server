@@ -1,2 +1,9 @@
 # 빌드 결과물은 커밋하지 않는다 (make로 언제든 다시 만들 수 있음)
 build/
+# tiny/ (CS:APP 11장 예제) 빌드 결과물
+tiny/*.o
+tiny/tiny
+tiny/echoclient
+tiny/echoserveri
+tiny/hostinfo
+tiny/cgi-bin/adder
