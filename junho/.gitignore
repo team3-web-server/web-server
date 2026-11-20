@@ -1,7 +1,17 @@
-# junho/ 빌드 결과물 (build/는 루트 .gitignore가 이미 제외)
-tiny/*.o
+# junho/ 아래에서 git에 올리지 않는 것 (루트 .gitignore의 build/는 이미 junho/build/도 제외한다)
+
+# 빌드 결과물: 오브젝트 파일과 tiny/ 실행 파일
+*.o
 tiny/tiny
 tiny/echoclient
 tiny/echoserveri
 tiny/hostinfo
 tiny/cgi-bin/adder
+
+# 크래시 덤프: 세그폴트 때 생기는 core 파일, valgrind가 남기는 vgcore 파일
+core
+core.[0-9]*
+vgcore.*
+
+# 도구가 하위 폴더에 만드는 작업 상태 (oh-my-claudecode 훅)
+.omc/
