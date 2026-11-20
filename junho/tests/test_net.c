@@ -1,28 +1,25 @@
-/*
- * net.c 단위 테스트. 외부 테스트 라이브러리 없이 표준 C로만 작성한다.
- * 각 테스트는 실패하면 FAIL 줄을 출력하고, 실패가 하나라도 있으면 종료 코드 1.
- */
-/* getaddrinfo, getsockname 선언을 켠다 (-std=c11은 POSIX 함수 선언을 숨김) */
+/* net.c 단위 테스트. 검사마다 PASS/FAIL 한 줄, 실패가 있으면 종료 코드 1. */
+/* -std=c11은 getaddrinfo 같은 POSIX 선언을 숨기므로 켠다 */
 #define _POSIX_C_SOURCE 200112L
 
 #include "net.h"
 
-#include <netdb.h>      /* getaddrinfo, getnameinfo */
+#include <netdb.h>
 #include <stdio.h>
-#include <string.h>     /* memset */
-#include <sys/socket.h> /* accept, connect, getsockname */
-#include <unistd.h>     /* close */
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 static int failures = 0;
 
-#define CHECK(cond, msg)                                   \
-    do {                                                   \
-        if (cond) {                                        \
-            printf("PASS: %s\n", msg);                     \
-        } else {                                           \
+#define CHECK(cond, msg)                                           \
+    do {                                                           \
+        if (cond) {                                                \
+            printf("PASS: %s\n", msg);                             \
+        } else {                                                   \
             printf("FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__); \
-            failures++;                                    \
-        }                                                  \
+            failures++;                                            \
+        }                                                          \
     } while (0)
 
 static void test_create_tcp_socket(void)
@@ -51,29 +48,31 @@ static void test_parse_port(void)
     CHECK(parse_port("99999999999999999999") == -1, "parse_port(오버플로) == -1");
 }
 
-/* listenfd가 받은 포트 번호를 문자열로 알아낸다 (open_listenfd("0")이면 커널이 고른 포트) */
-static int listen_port(int listenfd, char *serv, size_t servlen)
+/* 듣기 소켓이 실제로 받은 포트를 문자열로 알아낸다 (open_listenfd("0")은 커널이 포트를 고름) */
+static int listen_port(int listenfd, char *port, size_t portlen)
 {
     struct sockaddr_storage addr;
     socklen_t len = sizeof(addr);
     if (getsockname(listenfd, (struct sockaddr *)&addr, &len) == -1) {
         return -1;
     }
-    return getnameinfo((struct sockaddr *)&addr, len, NULL, 0, serv, servlen, NI_NUMERICSERV) == 0 ? 0 : -1;
+    int rc = getnameinfo((struct sockaddr *)&addr, len, NULL, 0, port, portlen, NI_NUMERICSERV);
+    return rc == 0 ? 0 : -1;
 }
 
-/* 이 컴퓨터(loopback)의 port로 connect한 fd를 돌려준다. IPv4·IPv6 주소를 차례로 시도 (CS:APP open_clientfd) */
+/* 이 컴퓨터의 port에 연결한 fd를 반환한다. IPv4·IPv6 주소를 차례로 시도한다. */
 static int connect_local(const char *port)
 {
-    struct addrinfo hints, *listp, *p;
+    struct addrinfo hints, *list, *p;
     int fd = -1;
+
     memset(&hints, 0, sizeof(hints));
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_NUMERICSERV;
-    if (getaddrinfo(NULL, port, &hints, &listp) != 0) {
+    if (getaddrinfo(NULL, port, &hints, &list) != 0) {
         return -1;
     }
-    for (p = listp; p != NULL; p = p->ai_next) {
+    for (p = list; p != NULL; p = p->ai_next) {
         fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
         if (fd == -1) {
             continue;
@@ -84,7 +83,7 @@ static int connect_local(const char *port)
         close(fd);
         fd = -1;
     }
-    freeaddrinfo(listp);
+    freeaddrinfo(list);
     return fd;
 }
 
@@ -95,11 +94,11 @@ static void test_open_listenfd_accept(void)
     if (listenfd < 0) {
         return;
     }
-    char serv[32];
-    CHECK(listen_port(listenfd, serv, sizeof(serv)) == 0, "듣기 소켓의 포트를 알아냄");
+    char port[32];
+    CHECK(listen_port(listenfd, port, sizeof(port)) == 0, "듣기 소켓의 포트를 알아냄");
 
-    /* listen 중이면 accept 전에도 connect가 성공한다: 연결 요청은 커널이 받아 큐에 쌓아 둔다 */
-    int clientfd = connect_local(serv);
+    /* accept 전에도 connect는 성공한다: 연결은 커널이 받아 큐에 쌓아 둔다 */
+    int clientfd = connect_local(port);
     CHECK(clientfd >= 0, "듣기 소켓 포트로 connect 성공");
     if (clientfd >= 0) {
         int connfd = accept(listenfd, NULL, NULL);
@@ -116,16 +115,20 @@ static void test_open_listenfd_accept(void)
 static void test_open_listenfd_in_use(void)
 {
     int first = open_listenfd("0");
-    char serv[32];
-    if (first < 0 || listen_port(first, serv, sizeof(serv)) != 0) {
+    char port[32];
+    if (first < 0 || listen_port(first, port, sizeof(port)) != 0) {
         CHECK(0, "포트 충돌 테스트용 듣기 소켓 준비");
-        if (first >= 0) close(first);
+        if (first >= 0) {
+            close(first);
+        }
         return;
     }
-    /* SO_REUSEADDR이 있어도 이미 listen 중인 포트는 다시 bind할 수 없다 (stderr의 "bind: Address already in use"는 정상) */
-    int second = open_listenfd(serv);
+    /* SO_REUSEADDR이 있어도 listen 중인 포트는 다시 bind할 수 없다 (stderr의 "Address already in use"는 정상) */
+    int second = open_listenfd(port);
     CHECK(second == -1, "listen 중인 포트로 open_listenfd하면 -1");
-    if (second >= 0) close(second);
+    if (second >= 0) {
+        close(second);
+    }
     close(first);
 }
 

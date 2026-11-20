@@ -1,17 +1,38 @@
 /*
- * 웹 서버 진입점.
- * 단계 1: <port>에 듣기 소켓을 열고, 연결 하나를 accept해 상대 주소를 출력한 뒤 닫고 끝난다.
- * 아직 요청 데이터는 읽지 않는다 (단계 2부터).
+ * 단계 1 서버: <port>에서 연결 하나를 받아 상대 주소를 출력하고 닫은 뒤 끝난다.
+ * 사용법: ./build/server <port>
  */
-/* getnameinfo, NI_NUMERICHOST 선언을 켠다 (-std=c11은 POSIX 함수 선언을 숨김) */
+/* -std=c11은 getnameinfo 같은 POSIX 선언을 숨기므로 켠다 */
 #define _POSIX_C_SOURCE 200112L
 
 #include "net.h"
 
-#include <netdb.h>      /* getnameinfo, gai_strerror, NI_NUMERICHOST, NI_NUMERICSERV */
-#include <stdio.h>      /* printf, fprintf, perror */
-#include <sys/socket.h> /* accept, struct sockaddr_storage, socklen_t */
-#include <unistd.h>     /* close */
+#include <netdb.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+static void print_peer(const struct sockaddr *addr, socklen_t len, int connfd)
+{
+    char host[1025], port[32];
+    /* 숫자로만 바꾼다: 이름 조회(DNS)는 느릴 수 있다 */
+    int rc = getnameinfo(addr, len, host, sizeof(host), port, sizeof(port),
+                         NI_NUMERICHOST | NI_NUMERICSERV);
+    if (rc != 0) {
+        fprintf(stderr, "getnameinfo: %s\n", gai_strerror(rc));
+        return;
+    }
+    printf("accepted (%s, %s) connfd = %d\n", host, port, connfd);
+}
+
+static int close_fd(int fd, const char *name)
+{
+    if (close(fd) == -1) {
+        perror(name);
+        return 1;
+    }
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -25,39 +46,19 @@ int main(int argc, char **argv)
         return 1;
     }
     printf("listening on port %s (listenfd = %d)\n", argv[1], listenfd);
-    fflush(stdout); /* 출력이 파이프로 갈 때도 accept에서 멈추기 전에 보이도록 */
+    fflush(stdout); /* 파이프로 출력할 때도 accept에서 멈추기 전에 보이도록 */
 
-    /* sockaddr_storage는 IPv4·IPv6 어느 주소든 담을 만큼 크다 (CS:APP 그림 11.21) */
     struct sockaddr_storage clientaddr;
     socklen_t clientlen = sizeof(clientaddr);
-
-    /* 클라이언트가 connect할 때까지 여기서 멈춘다. 연결되면 그 연결 전용 새 fd(connfd)를 받는다 */
     int connfd = accept(listenfd, (struct sockaddr *)&clientaddr, &clientlen);
     if (connfd == -1) {
         perror("accept");
         close(listenfd);
         return 1;
     }
+    print_peer((struct sockaddr *)&clientaddr, clientlen, connfd);
 
-    /* 숫자 형식으로만 바꾼다: 도메인 이름 조회(DNS)를 하면 응답이 늦어질 수 있다 */
-    char host[1025], serv[32];
-    int rc = getnameinfo((struct sockaddr *)&clientaddr, clientlen, host, sizeof(host),
-                         serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
-    if (rc != 0) {
-        fprintf(stderr, "getnameinfo: %s\n", gai_strerror(rc));
-    } else {
-        printf("accepted (%s, %s) connfd = %d\n", host, serv, connfd);
-    }
-
-    /* 연결 fd를 닫으면 클라이언트는 EOF를 받는다(curl: Empty reply from server). 듣기 fd도 닫고 끝낸다 */
-    int status = 0;
-    if (close(connfd) == -1) {
-        perror("close connfd");
-        status = 1;
-    }
-    if (close(listenfd) == -1) {
-        perror("close listenfd");
-        status = 1;
-    }
+    int status = close_fd(connfd, "close connfd");
+    status |= close_fd(listenfd, "close listenfd");
     return status;
 }
