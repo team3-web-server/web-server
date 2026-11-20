@@ -185,6 +185,7 @@ $ echo $?
 | `src/main.c` | socket → `set_reuseaddr` → bind → listen → accept → `close(conn_fd)` → `close(fd)`. 1-2의 임시 Enter 대기를 지웠다 |
 | `tests/test_net.c` | `SO_REUSEADDR` 켜짐 확인, listen 성공, accept 전에 connect 성공, 연결 fd가 듣기 fd와 다름, 클라이언트가 닫으면 `read()`가 0, 연결 소켓을 닫아도 듣기 소켓은 열려 있음 |
 | `tests/run_tests.sh` | 서버를 백그라운드로 띄우고 bash의 `/dev/tcp/127.0.0.1/8080`으로 연결을 한 번 건 뒤 종료 코드 0을 확인 |
+| `demo/`, `Makefile`의 `make demo` | 여섯 가지 상황을 직접 보는 시연용 프로그램 (`listen_demo`, `connect_demo`, `watch_retrans.sh`). 서버 본체와 따로 빌드 |
 
 실행 결과:
 ```
@@ -291,6 +292,25 @@ curl: (56) Recv failure: Connection reset by peer
 | `set_reuseaddr` 추가 후 `make test` 두 번, `make asan` 두 번 연달아 실행 | 모두 통과 |
 | `set_reuseaddr` 추가 후, 서버가 듣고 있는 동안 한 번 더 실행 | `bind: Address already in use` (옵션을 켜도 실패) |
 | 옵션 없는 예전 실행 파일이 남긴 TIME_WAIT가 있는 동안, 옵션 있는 새 실행 파일을 실행 | `bind: Address already in use`. 리눅스는 이전 소켓과 새 소켓 둘 다 옵션이 켜져 있어야 허용했다 |
+
+### 1-3 시연: 여섯 가지 상황 직접 보기
+
+`build/server`는 연결을 받자마자 닫고 끝나서 중간 상태를 볼 수 없다. 그래서 중간에 Enter를 기다리는 시연용 프로그램을 `demo/`에 따로 두었다. 아래 출력과 숫자는 작업 환경(리눅스 커널 6.18 컨테이너)에서 잰 값이고, 다른 PC에서는 다를 수 있다.
+
+준비: 레포 루트에서 `make demo`. 터미널 세 개(A 서버, B 클라이언트, C 관찰)를 열고 모두 레포 루트로 이동한다.
+
+| 상황 | 실행 | 확인할 것 |
+|---|---|---|
+| 1. backlog는 대기열의 최대 길이 | A: `./build/listen_demo 2` (Enter 누르지 않음) → B: `./build/connect_demo 5` | `accept`를 한 번도 부르지 않았는데 연결 1~3은 `성공 (0.00초 걸림)`, 연결 4에서 멈춘다. 리눅스는 backlog + 1개까지 받았다 |
+| 5. 대기열이 가득 차면 SYN을 버리고, 클라이언트 커널이 재전송 | 상황 1을 시작하기 전에 C: `bash demo/watch_retrans.sh` | B가 `connect()`에서 멈춰 있는 동안 C에 `재전송 N번째` 줄이 늘어난다. 잰 시각: 1.0, 2.1, 3.1, 4.1, 5.1, 7.1, 11.3, 19.5초. 이 상태에서 A에서 Enter를 누르면 자리가 나서 B의 연결 4가 `성공 (5.10초 걸림)`처럼 찍힌다 |
+| 4. 대기열이 비어 있으면 `accept`가 멈춘다 | (모두 끄고) A: `./build/listen_demo 2` 실행 후 바로 Enter → C: `ps -o pid,stat,pcpu,wchan:20,cmd -p $(pgrep listen_demo)` | A는 `[2] accept(fd, NULL, NULL) 호출...`에서 멈춘다. `ps`에 `STAT` S(sleeping), `%CPU` 0.0, `WCHAN` `inet_csk_accept` |
+| 6. `accept` 뒤 fd 3과 4는 서로 다른 소켓 객체 | 상황 4에서 이어서 B: `./build/connect_demo 1` → C: `ls -l /proc/$(pgrep listen_demo)/fd` 와 `lsof -a -p $(pgrep listen_demo) -i -P -n` | A가 `accept 반환: 연결 소켓 fd = 4`를 찍는다. `3 -> socket:[10406]`, `4 -> socket:[14671]`처럼 번호가 다르다. `lsof`에는 3번이 `*:9090 (LISTEN)`, 4번이 `127.0.0.1:9090->127.0.0.1:55628 (ESTABLISHED)` |
+| 3. 주소가 필요 없으면 `NULL` | `demo/listen_demo.c`의 `accept(fd, NULL, NULL)`과 `src/net.c`의 `accept(fd, (struct sockaddr *)&client, &len)`을 비교 | 상황 6에서 주소를 받지 않고도 fd 4를 받았다. `NULL` 쪽은 클라이언트 IP:포트를 알 수 없다 |
+| 2. backlog가 상한보다 크면 조용히 잘린다 | A: `cat /proc/sys/net/core/somaxconn` (4096) → A: `ulimit -n 6000 && ./build/listen_demo 100000` → B: `ulimit -n 6000 && ./build/connect_demo 4100` | `listen(fd, 100000) 반환값 = 0`으로 에러가 없다. 연결 4097까지 성공하고 4098에서 멈춘다 (상한 4096 + 1) |
+
+각 상황이 끝나면 A·B는 Enter 또는 Ctrl+C, C는 Ctrl+C로 끈다. `bind: Address already in use`가 나오면 이전 `listen_demo`가 남아 있는 것이니 `pkill listen_demo` 후 다시 한다.
+
+재전송 간격에 대해: 처음 다섯 번이 1초 간격이고 그 뒤 2초, 4초, 8초로 늘어났다. 이 커널은 `net.ipv4.tcp_syn_linear_timeouts`가 4다. 학습 캔버스 5번 그림의 "1초, 2초, 4초, 8초(0, 1, 3, 7, 15초)"와 다르므로, 각자 PC에서 잰 값으로 확인한다.
 
 ### 확인한 것
 
