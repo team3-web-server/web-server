@@ -12,23 +12,23 @@ int main(int argc, char **argv)
         exit(0);
     }
 
-    /* Get a list of addrinfo records */
+    /* addrinfo 레코드 목록을 받는다 */
     memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_INET;       /* IPv4 only */
-    hints.ai_socktype = SOCK_STREAM; /* Connections only */
+    hints.ai_family = AF_INET;       /* IPv4만 */
+    hints.ai_socktype = SOCK_STREAM; /* 연결(connection)용만 */
     if ((rc = getaddrinfo(argv[1], NULL, &hints, &listp)) != 0) {
         fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(rc));
         exit(1);
     }
 
-    /* Walk the list and display each IP address */
-    flags = NI_NUMERICHOST; /* Display address string instead of domain name */
+    /* 목록을 순회하며 IP 주소를 하나씩 출력 */
+    flags = NI_NUMERICHOST; /* 도메인 이름 대신 주소 문자열을 출력 */
     for (p = listp; p; p = p->ai_next) {
         Getnameinfo(p->ai_addr, p->ai_addrlen, buf, MAXLINE, NULL, 0, flags);
         printf("%s\n", buf);
     }
 
-    /* Clean up */
+    /* 정리 */
     Freeaddrinfo(listp);
 
     exit(0);
