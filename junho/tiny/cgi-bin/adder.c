@@ -1,40 +1,32 @@
 /*
- * adder.c - 두 수를 더하는 최소한의 CGI 프로그램
- * (CS:APP 그림 11.27)
+ * QUERY_STRING "a&b"의 두 수를 더해 HTML로 출력하는 CGI 프로그램 (CS:APP 그림 11.27)
+ * Tiny가 표준 출력을 클라이언트 연결로 바꿔 둔 뒤 실행하므로, 출력이 곧 HTTP 응답의 나머지다.
  */
 #include "netlib.h"
 
-int main(void) {
-    char *buf, *p;
-    char arg1[MAXLINE], arg2[MAXLINE], content[MAXLINE];
-    int n1=0, n2=0;
+int main(void)
+{
+    int a = 0, b = 0;
+    char *query = getenv("QUERY_STRING");
 
-    /* 두 인자를 꺼낸다 */
-    if ((buf = getenv("QUERY_STRING")) != NULL) {
-        p = strchr(buf, '&');
-        *p = '\0';
-        strcpy(arg1, buf);
-        strcpy(arg2, p+1);
-        n1 = atoi(arg1);
-        n2 = atoi(arg2);
+    if (query != NULL) {
+        char *amp = strchr(query, '&');
+        *amp = '\0'; /* 책 그대로: '&'가 없으면 여기서 크래시 (README의 한계 참고) */
+        a = atoi(query);
+        b = atoi(amp + 1);
     }
 
-    /* 응답 본문을 만든다 */
-    /* 책 원문 sprintf(content, "%s...", content)는 원본과 대상이 겹쳐 정의되지 않은 동작이다.
-     * -O2(_FORTIFY_SOURCE)에서는 앞 내용이 지워지는 것을 확인해, 끝 위치(content + strlen(content))에 이어 쓰도록 바꿨다. */
-    sprintf(content, "QUERY_STRING=%s", buf);
-    sprintf(content, "Welcome to add.com: ");
-    sprintf(content + strlen(content), "THE Internet addition portal.\r\n<p>");
-    sprintf(content + strlen(content), "The answer is: %d + %d = %d\r\n<p>",
-            n1, n2, n1 + n2);
-    sprintf(content + strlen(content), "Thanks for visiting!\r\n");
+    char content[MAXLINE];
+    snprintf(content, sizeof(content),
+             "Welcome to add.com: THE Internet addition portal.\r\n<p>"
+             "The answer is: %d + %d = %d\r\n<p>"
+             "Thanks for visiting!\r\n",
+             a, b, a + b);
 
-    /* HTTP 응답을 만든다 */
     printf("Connection: close\r\n");
     printf("Content-length: %d\r\n", (int)strlen(content));
     printf("Content-type: text/html\r\n\r\n");
     printf("%s", content);
     fflush(stdout);
-
     exit(0);
 }
