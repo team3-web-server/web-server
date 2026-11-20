@@ -98,6 +98,64 @@ $ echo $?
 - **`EADDRINUSE`**: 같은 주소·포트에 이미 bind된 소켓이 있으면 두 번째 bind는 실패한다. 포트 하나는 한 소켓만 맡을 수 있다.
 - **`EACCES`**: 1024 미만 포트(예: 80)는 관리자 권한이 있어야 bind할 수 있다.
 
+#### 학습 캔버스 그림 (2. IP 주소, 포트, TCP 연결)
+
+**1. IP 주소: 호스트를 가리키는 번호**
+
+![IP 주소: 호스트를 가리키는 번호](images/step1-2-01-ip.png)
+
+**2. 인터페이스, 루프백, INADDR_ANY**
+
+![인터페이스, 루프백, INADDR_ANY](images/step1-2-02-interface.png)
+
+**3. 포트: 호스트 안에서 소켓을 고르는 번호**
+
+![포트: 호스트 안에서 소켓을 고르는 번호](images/step1-2-03-port.png)
+
+**4. 포트 번호의 구역**
+
+![포트 번호의 구역](images/step1-2-04-port-range.png)
+
+**5. 소켓 주소와 소켓 쌍**
+
+![소켓 주소와 소켓 쌍](images/step1-2-05-socket-pair.png)
+
+**6. 3-way handshake: 연결을 맺는 패킷 세 개**
+
+![3-way handshake: 연결을 맺는 패킷 세 개](images/step1-2-06-handshake.png)
+
+**7. 바이트 순서 (엔디언)**
+
+![바이트 순서 (엔디언)](images/step1-2-07-endian.png)
+
+**8. htons / htonl: 네트워크 순서로 바꾸는 함수**
+
+![htons / htonl: 네트워크 순서로 바꾸는 함수](images/step1-2-08-htons.png)
+
+**9. struct sockaddr_in: 소켓 주소를 담는 구조체**
+
+![struct sockaddr_in: 소켓 주소를 담는 구조체](images/step1-2-09-sockaddr-in.png)
+
+**10. 코드 흐름 ①: 구조체 채우기**
+
+![코드 흐름 ①: 구조체 채우기](images/step1-2-10-fill-struct.png)
+
+**11. 코드 흐름 ②: bind()로 소켓에 주소 붙이기**
+
+![코드 흐름 ②: bind()로 소켓에 주소 붙이기](images/step1-2-11-bind.png)
+
+**12. bind가 실패할 때**
+
+![bind가 실패할 때](images/step1-2-12-bind-fail.png)
+
+**13. 지금 어디까지 왔나**
+
+![지금 어디까지 왔나](images/step1-2-13-lifecycle.png)
+
+**보충. 코드 한 줄씩 풀이 (addr 멤버, htons, bind 인자, 커널에서 본 흐름)**
+
+![addr 구조체의 멤버, htons 줄, bind 줄, 커널에서 본 흐름 설명 카드](images/step1-2-14-code-notes.png)
+
 ### 확인한 것
 
 | 확인 | 결과 |
