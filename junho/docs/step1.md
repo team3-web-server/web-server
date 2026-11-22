@@ -48,10 +48,10 @@ curl 쪽은 `curl: (52) Empty reply from server`. 요청을 읽지 않고 바로
 | `make` (`-Wall -Wextra`) | 경고 0 |
 | `make test` | 인자 검사 PASS, curl 연결·종료 코드 PASS, 단위 테스트 모두 PASS |
 | `make asan` | 같은 테스트 모두 PASS, ASan 보고 없음 |
+| `bash valgrind.sh` | 단계 1 서버·Tiny·adder·echoclient·echoserveri·hostinfo 모두 메모리·fd 오류 0, 누수 0, fd 개수 기대값 일치 (valgrind 3.26.0) |
 
 ## 아직 하지 않은 것
 
-- `valgrind --track-fds=yes`: 이 컴퓨터에 valgrind가 없어 확인하지 않았다.
 - `socket`·`listen`·`accept`가 실패하는 경로는 일부러 일으키기 어려워 테스트하지 않았다 (`bind` 실패는 포트 충돌 테스트로 확인).
 - `run_tests.sh`는 18080번 포트를 쓴다. 그 포트를 다른 프로그램이 쓰고 있으면 실패한다 (세 번째 인자로 바꿀 수 있음).
 - `open_listenfd` 포트 충돌 테스트는 Linux 기본값 `net.ipv6.bindv6only = 0`을 전제로 한다. 1이거나 macOS/BSD면 `[::]`에 따로 bind가 되어 실패할 수 있다.
