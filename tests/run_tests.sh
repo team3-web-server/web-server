@@ -46,7 +46,7 @@ else
   fail=1
 fi
 # grep -q: 찾는 줄이 있으면 성공(0), 없으면 실패. 화면에는 아무것도 출력하지 않는다
-if grep -q '^메서드: GET$' "$out" && grep -q '^요청 대상: /index.html$' "$out" && grep -q '^버전: HTTP/1.1$' "$out"; then
+if grep -q '^메서드: GET$' "$out" && grep -q '^요청 대상: /index.html$' "$out" && grep -q '^HTTP 버전: HTTP/1.1$' "$out"; then
   echo "PASS: $bin 요청 줄을 GET, /index.html, HTTP/1.1 세 칸으로 나눠 출력"
 else
   echo "FAIL: $bin 출력에 메서드·요청 대상·버전 줄이 없음"

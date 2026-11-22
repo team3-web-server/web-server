@@ -21,7 +21,7 @@ listen 중: 연결을 기다립니다 (다른 터미널에서 curl localhost:808
 받은 바이트 수: 87
 메서드: GET
 요청 대상: /index.html
-버전: HTTP/1.1
+HTTP 버전: HTTP/1.1
 연결을 닫았습니다 (conn fd = 4)
 ```
 

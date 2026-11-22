@@ -92,7 +92,7 @@ int main(void)
         if (parse_request_line(buf, &req) == 0) {
             printf("메서드: %s\n", req.method);
             printf("요청 대상: %s\n", req.target);
-            printf("버전: %s\n", req.version);
+            printf("HTTP 버전: %s\n", req.version);
             free_request(&req);
         } else {
             printf("요청 줄 형식이 맞지 않습니다\n");
