@@ -70,6 +70,34 @@ G E T ␠ / i n d e x . h t m l ␠ H T T P / 1 . 1 \r \n
 - 해제를 빠뜨리면 메모리 누수다. `make asan`(`-fsanitize=address,leak`)이 프로그램이 끝날 때 해제되지 않은 할당을 보고한다.
 - `free_request`는 해제한 뒤 포인터를 `NULL`로 바꾼다. `free(NULL)`은 아무 일도 하지 않으므로, 두 번 불러도 같은 주소를 두 번 해제(이중 해제)하지 않는다.
 
+#### 학습 그림 (HTTP 요청 메시지의 구조와 요청 줄)
+
+학습 페이지의 18개 그림 중 이번 단계 코드와 직접 이어지는 1, 2, 3, 4, 5, 7번이다. 번호는 학습 페이지의 번호 그대로다. 4번 그림은 `localhost:5200`으로 잰 것인데, 포트 숫자가 네 자리로 같아서 8080번일 때와 길이와 위치가 같다.
+
+**1. HTTP와 TCP: 층이 다른 약속**
+
+![HTTP와 TCP: 층이 다른 약속](images/step2-01-http-tcp-layers.png)
+
+**2. 헤더는 층마다 있다**
+
+![헤더는 층마다 있다](images/step2-02-headers-per-layer.png)
+
+**3. HTTP 메시지의 네 칸 구조**
+
+![HTTP 메시지의 네 칸 구조](images/step2-03-message-structure.png)
+
+**4. 실제 요청 87바이트의 지도**
+
+![실제 요청 87바이트의 지도](images/step2-04-request-87-bytes.png)
+
+**5. 요청 줄: 공백으로 나뉜 세 칸**
+
+![요청 줄: 공백으로 나뉜 세 칸](images/step2-05-request-line.png)
+
+**7. 왜 빈 줄이 중요한가**
+
+![왜 빈 줄이 중요한가](images/step2-07-blank-line.png)
+
 ## 결정사항과 이유
 
 | 결정 | 이유 |
