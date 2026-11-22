@@ -1,16 +1,20 @@
 /*
  * 웹 서버 진입점.
- * 단계 1-3: TCP 소켓을 만들고 8080번 포트에 bind → listen → 연결 하나를 accept → 닫고 종료한다.
- * 요청을 읽거나 응답을 보내지는 않는다. 연결을 여러 번 받는 반복도 아직 없다.
+ * 단계 2: TCP 소켓을 만들고 8080번 포트에 bind → listen → 연결 하나를 accept
+ *         → read를 한 번 불러 요청을 받고 → 요청 줄을 세 칸으로 나눠 출력 → 닫고 종료한다.
+ * 응답은 아직 보내지 않는다. 요청이 여러 번에 나뉘어 올 때 반복해서 읽는 것, 연결을 여러 번 받는 반복도 아직 없다.
  */
+#include "http.h"
 #include "net.h"
 
 #include <stdio.h>      /* printf, perror, fflush */
 #include <sys/socket.h> /* SOMAXCONN */
-#include <unistd.h>     /* close */
+#include <sys/types.h>  /* ssize_t */
+#include <unistd.h>     /* read, close */
 
 #define PORT 8080
 #define BACKLOG SOMAXCONN /* 연결 대기열 최대 길이. SOMAXCONN은 <sys/socket.h>에 정의된 시스템 상한 값 */
+#define REQ_BUF_SIZE 4096 /* 요청을 받는 버퍼 크기(바이트). 마지막 한 바이트는 '\0' 자리로 남긴다 */
 
 int main(void)
 {
@@ -54,10 +58,51 @@ int main(void)
     }
 
     /*
+     * 요청을 읽는다. read(fd, 버퍼, 최대 바이트 수)는 커널의 수신 버퍼에 도착해 있는 바이트를 buf로 복사하고
+     * 복사한 바이트 수를 돌려준다. 아직 아무것도 도착하지 않았으면 도착할 때까지 멈춰 있는다.
+     *   반환값 > 0: 받은 바이트 수 (요청 전체가 아닐 수도 있다. 지금은 한 번만 읽는다)
+     *   반환값 0: 상대가 아무것도 보내지 않고 연결을 닫았다
+     *   반환값 -1: 에러
+     * 최대 바이트 수를 sizeof(buf) - 1로 줘서 '\0'을 넣을 자리 한 바이트를 남긴다.
+     * ssize_t: 바이트 수 또는 -1을 담는 부호 있는 정수 타입
+     */
+    char buf[REQ_BUF_SIZE];
+    ssize_t n = read(conn_fd, buf, sizeof(buf) - 1);
+    if (n == -1) {
+        perror("read");
+        close(conn_fd);
+        close(fd);
+        return 1;
+    }
+    if (n == 0) {
+        printf("요청 없이 연결이 닫혔습니다\n");
+    } else {
+        /*
+         * read는 받은 바이트만 복사하고 끝에 '\0'을 붙여 주지 않는다.
+         * strstr 같은 문자열 함수는 '\0'을 만날 때까지 읽으므로, 받은 바이트 바로 뒤에 직접 '\0'을 넣는다.
+         */
+        buf[n] = '\0';
+        printf("받은 바이트 수: %zd\n", n);
+
+        /*
+         * 요청 줄(첫 줄)을 메서드, 요청 대상, 버전 세 칸으로 나눈다.
+         * 성공하면 세 칸은 malloc으로 할당된 메모리에 들어 있으므로, 다 쓴 뒤 free_request로 해제한다.
+         */
+        struct http_request req;
+        if (parse_request_line(buf, &req) == 0) {
+            printf("메서드: %s\n", req.method);
+            printf("요청 대상: %s\n", req.target);
+            printf("버전: %s\n", req.version);
+            free_request(&req);
+        } else {
+            printf("요청 줄 형식이 맞지 않습니다\n");
+        }
+    }
+
+    /*
      * 연결 소켓을 닫는다. 커널이 연결을 끝내고, 듣기 소켓(fd)은 아직 열려 있다.
-     * 닫는 순간 클라이언트가 보낸 데이터가 이미 도착해 있는데 읽지 않았다면 커널은 FIN 대신 RST(강제 종료)를 보낸다.
-     * 그래서 지금 curl로 접속하면 "Connection reset by peer"(요청이 먼저 도착) 또는
-     * "Empty reply from server"(요청이 도착하기 전에 닫힘)가 나온다. 요청을 읽는 것은 다음 단계에서 한다.
+     * 응답을 보내지 않고 닫으므로 curl에는 "Empty reply from server"가 나온다.
+     * (받은 데이터를 다 읽은 뒤 닫았기 때문에 커널은 RST가 아니라 FIN을 보낸다.) 응답을 보내는 것은 다음 단계에서 한다.
      */
     if (close(conn_fd) == -1) {
         perror("close(conn_fd)");
