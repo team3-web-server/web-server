@@ -1,6 +1,6 @@
 /*
  * Tiny: GET 요청에 정적 파일 또는 CGI 프로그램 출력으로 응답하는 반복 HTTP/1.0 서버 (CS:APP 11.6)
- * 사용법: ./tiny <port>   (정적 파일은 현재 디렉터리, CGI 프로그램은 ./cgi-bin에서 찾는다)
+ * 사용법: ../build/tiny <port>   (junho/tiny에서 실행. 정적 파일은 현재 디렉터리, CGI 프로그램은 ./cgi-bin에서 찾는다)
  */
 #include "netlib.h"
 

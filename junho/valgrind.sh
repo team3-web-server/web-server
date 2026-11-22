@@ -59,7 +59,7 @@ check_log "단계 1 서버" "$logs/server.log" 3
 #    --trace-children: fork한 자식과 execve한 adder도 각자 로그(%p = pid)를 남긴다
 cd tiny
 tport=$((port + 1))
-"${VG[@]}" --trace-children=yes --log-file="$logs/tiny.%p.log" ./tiny "$tport" > /dev/null 2>&1 &
+"${VG[@]}" --trace-children=yes --log-file="$logs/tiny.%p.log" ../build/tiny "$tport" > /dev/null 2>&1 &
 pids+=($!)
 url="http://127.0.0.1:$tport"
 wait_ready curl -sf -o /dev/null "$url/" || failed "Tiny가 포트 $tport에서 응답"
@@ -68,7 +68,7 @@ for path in / /godzilla.gif "/cgi-bin/adder?15000&213" /no-such-file.html /cgi-b
 done
 curl -s -o /dev/null -X POST "$url/"
 kill "${pids[0]}"; wait "${pids[0]}" 2>/dev/null
-tiny_log=$(grep -l "Command: ./tiny" "$logs"/tiny.*.log)
+tiny_log=$(grep -l "Command: ../build/tiny" "$logs"/tiny.*.log)
 check_log "Tiny" "$tiny_log" 4
 adder_log=$(grep -l "Command: ./cgi-bin/adder" "$logs"/tiny.*.log)
 # adder는 Tiny가 dup2로 표준 출력을 연결 fd로 바꿔 둔 자식이다. 물려받은 연결 fd(4)와 듣기 fd(3)가 열린 채 실행된다(책 코드 그대로)

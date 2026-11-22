@@ -1,8 +1,7 @@
 # junho/ 아래에서 git에 올리지 않는 것 (루트 .gitignore의 build/는 이미 junho/build/도 제외한다)
 
-# 빌드 결과물: 오브젝트 파일과 tiny/ 실행 파일
+# 빌드 결과물: 오브젝트 파일과 tiny/ 보조 예제 실행 파일
 *.o
-tiny/tiny
 tiny/echoclient
 tiny/echoserveri
 tiny/hostinfo

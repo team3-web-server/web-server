@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # CS:APP 11장 예제 동작 확인. 사용법: make test (또는 tiny/ 안에서 bash tests.sh [시작 포트])
+# Tiny 실행 파일은 ../build/tiny이고, 정적 파일은 이 디렉터리 기준으로 찾는다.
 #   Tiny: 정적 HTML·GIF, adder(CGI), 404, 403, 501
 #   에코 서버·클라이언트: 보낸 줄이 그대로 돌아오는지
 #   hostinfo: localhost가 127.0.0.1로 풀리는지
@@ -30,7 +31,7 @@ wait_ready() {
 }
 
 # stdbuf -oL: 서버 printf가 파일로 갈 때도 줄마다 바로 기록되게 (나중에 kill로 끝내므로)
-stdbuf -oL ./tiny "$port" > "$tmp/tiny.log" 2>&1 &
+stdbuf -oL ../build/tiny "$port" > "$tmp/tiny.log" 2>&1 &
 pids+=($!)
 url="http://127.0.0.1:$port"
 wait_ready curl -s -o /dev/null "$url/" || { failed "tiny가 포트 $port에서 응답"; exit 1; }
