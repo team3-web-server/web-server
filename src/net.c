@@ -1,13 +1,11 @@
 #include "net.h"
 
 #include <arpa/inet.h>  /* inet_ntop */
-#include <errno.h>      /* errno, EINTR */
+#include <errno.h>      /* errno */
 #include <netinet/in.h> /* struct sockaddr_in, htons, htonl, ntohs, INADDR_ANY, INET_ADDRSTRLEN */
 #include <stdio.h>      /* perror, printf */
 #include <string.h>     /* memset */
 #include <sys/socket.h> /* socket, setsockopt, bind, listen, accept, AF_INET, SOCK_STREAM, socklen_t */
-#include <sys/types.h>  /* ssize_t */
-#include <unistd.h>     /* write */
 
 /* TCP 소켓을 하나 만들어서 그 fd 번호를 돌려주는 함수. 만들지 못하면 에러 원인을 출력하고 -1을 돌려준다. */
 int create_tcp_socket(void)
@@ -143,30 +141,4 @@ int accept_client(int fd)
         printf("연결 수락: 클라이언트 %s:%d (conn fd = %d)\n", ip, ntohs(client.sin_port), conn_fd);
     }
     return conn_fd;
-}
-
-/* buf의 len바이트를 fd에 전부 쓴다. write가 일부만 쓰고 돌아오면 남은 부분을 이어서 다시 쓴다. */
-int write_all(int fd, const char *buf, size_t len)
-{
-    size_t left = len; /* 아직 쓰지 못한 바이트 수 */
-
-    while (left > 0) {
-        /*
-         * write(fd, 시작 주소, 바이트 수)는 프로세스의 바이트를 커널의 송신 버퍼로 복사하고
-         * 복사한 바이트 수를 돌려준다. 요청한 수보다 작을 수 있다.
-         */
-        ssize_t n = write(fd, buf, left);
-        if (n == -1) {
-            if (errno == EINTR) {
-                continue; /* 시그널 때문에 중단됐을 뿐이다. 쓴 것이 없으니 그대로 다시 write한다 */
-            }
-            int saved_errno = errno;
-            perror("write");
-            errno = saved_errno;
-            return -1;
-        }
-        buf += n;          /* 쓴 만큼 시작 위치를 앞으로 옮긴다 */
-        left -= (size_t)n; /* 쓴 만큼 남은 수를 줄인다 */
-    }
-    return 0;
 }

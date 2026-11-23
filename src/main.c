@@ -9,9 +9,9 @@
 #include "net.h"
 
 #include <stddef.h>     /* size_t */
-#include <stdio.h>      /* printf, fflush */
+#include <stdio.h>      /* printf, fflush, perror */
 #include <sys/socket.h> /* SOMAXCONN */
-#include <unistd.h>     /* close */
+#include <unistd.h>     /* close, write, ssize_t */
 
 #define PORT 8080
 #define BACKLOG SOMAXCONN /* 연결 대기열 최대 길이. SOMAXCONN은 <sys/socket.h>에 정의된 시스템 상한 값 */
@@ -109,12 +109,14 @@ int main(void)
     } else if (head == HEAD_TOO_LARGE) {
         /* 헤더가 버퍼보다 길다. 요청을 해석하지 않고 431 에러 응답을 보낸다 */
         printf("헤더가 너무 깁니다 (버퍼 %d바이트)\n", REQ_BUF_SIZE);
-        if (write_all(conn_fd, RESPONSE_431, sizeof(RESPONSE_431) - 1) == -1) {
+        ssize_t sent = write(conn_fd, RESPONSE_431, sizeof(RESPONSE_431) - 1);
+        if (sent == -1) {
+            perror("write");
             close(conn_fd);
             close(fd);
             return 1;
         }
-        printf("431 응답을 보냈습니다 (%zu바이트)\n", sizeof(RESPONSE_431) - 1);
+        printf("431 응답을 보냈습니다 (%zd바이트)\n", sent);
     } else {
         /*
          * 요청 줄을 메서드, 요청 대상, 버전 세 칸으로 나눠 출력한다 (단계 2의 파서).
@@ -133,13 +135,16 @@ int main(void)
         /*
          * 고정 응답을 보낸다. 지금은 요청 내용과 상관없이 항상 같은 응답이다.
          * sizeof(RESPONSE)는 끝의 '\0'까지 센 크기라서 1을 뺀다. '\0'은 HTTP 메시지의 일부가 아니다.
+         * write(fd, 시작 주소, 바이트 수)는 프로세스의 바이트를 커널의 송신 버퍼로 복사하고, 복사한 바이트 수를 돌려준다.
          */
-        if (write_all(conn_fd, RESPONSE, sizeof(RESPONSE) - 1) == -1) {
+        ssize_t sent = write(conn_fd, RESPONSE, sizeof(RESPONSE) - 1);
+        if (sent == -1) {
+            perror("write");
             close(conn_fd);
             close(fd);
             return 1;
         }
-        printf("응답을 보냈습니다 (%zu바이트)\n", sizeof(RESPONSE) - 1);
+        printf("응답을 보냈습니다 (%zd바이트)\n", sent);
     }
 
     /*

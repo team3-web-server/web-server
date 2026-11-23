@@ -8,12 +8,9 @@
 #include <errno.h>      /* errno, EADDRINUSE */
 #include <netinet/in.h> /* struct sockaddr_in, INADDR_LOOPBACK */
 #include <stdio.h>
-#include <stdlib.h>     /* malloc, free */
-#include <string.h>     /* memset, memcmp */
+#include <string.h>     /* memset */
 #include <sys/socket.h> /* connect, getsockopt, SOMAXCONN */
-#include <sys/types.h>  /* pid_t, ssize_t */
-#include <sys/wait.h>   /* waitpid, WIFEXITED, WEXITSTATUS */
-#include <unistd.h>     /* close, read, fork, _exit */
+#include <unistd.h>     /* close, read */
 
 /* 테스트용 포트. 서버 기본 포트(8080)가 다른 프로그램에 잡혀 있어도 테스트가 깨지지 않게 따로 둔다 */
 #define TEST_PORT 18080
@@ -144,89 +141,6 @@ static void test_accept_client(void)
     CHECK(close(listen_fd) == 0, "연결 소켓을 닫은 뒤에도 듣기 소켓은 열려 있어 close()가 0을 반환");
 }
 
-/* write_all: 짧은 데이터(고정 응답과 같은 98바이트)를 쓰면 반대쪽에서 같은 바이트가 그대로 읽힌다 */
-static void test_write_all_small(void)
-{
-    const char *msg = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 15\r\nConnection: close\r\n\r\n<h1>Hello</h1>\n";
-    size_t len = strlen(msg);
-    int fds[2];
-    CHECK(len == 98, "고정 응답이 98바이트");
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == -1) {
-        perror("socketpair");
-        failures++;
-        return;
-    }
-    CHECK(write_all(fds[1], msg, len) == 0, "write_all이 98바이트를 쓰고 0을 반환");
-    close(fds[1]);
-
-    char buf[256];
-    size_t total = 0;
-    ssize_t n;
-    while ((n = read(fds[0], buf + total, sizeof(buf) - total)) > 0) {
-        total += (size_t)n;
-    }
-    close(fds[0]);
-    CHECK(total == len && memcmp(buf, msg, len) == 0, "반대쪽에서 읽은 98바이트가 보낸 것과 같음");
-}
-
-/*
- * write_all: 커널의 송신 버퍼보다 큰 데이터(4MB)를 쓴다.
- * 읽는 쪽(자식 프로세스)이 조금씩 읽어 가는 동안 write는 여러 번에 나뉘어 쓰이게 되고,
- * 그래도 write_all은 전부 쓴 뒤에 0을 돌려줘야 한다. 자식은 받은 바이트 수와 내용을 확인해 종료 코드로 알린다.
- */
-static void test_write_all_large(void)
-{
-    size_t len = 4 * 1024 * 1024;
-    char *data = malloc(len);
-    if (data == NULL) {
-        failures++;
-        return;
-    }
-    for (size_t i = 0; i < len; i++) {
-        data[i] = (char)('a' + i % 26);
-    }
-    int fds[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == -1) {
-        perror("socketpair");
-        failures++;
-        free(data);
-        return;
-    }
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* 자식 프로세스: 끝까지 읽으면서 바이트 수와 내용을 확인한다 */
-        close(fds[1]);
-        char buf[1000];
-        size_t total = 0;
-        int ok = 1;
-        ssize_t n;
-        while ((n = read(fds[0], buf, sizeof(buf))) > 0) {
-            for (ssize_t i = 0; i < n; i++) {
-                if (buf[i] != (char)('a' + (total + (size_t)i) % 26)) {
-                    ok = 0;
-                }
-            }
-            total += (size_t)n;
-        }
-        _exit(ok && total == len ? 0 : 1);
-    }
-    close(fds[0]);
-    CHECK(write_all(fds[1], data, len) == 0, "write_all이 4MB를 모두 쓰고 0을 반환");
-    close(fds[1]);
-    int status = 0;
-    waitpid(pid, &status, 0);
-    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "반대쪽에서 4MB를 순서대로 빠짐없이 받음");
-    free(data);
-}
-
-/* write_all: 닫힌 fd에 쓰면 -1 */
-static void test_write_all_bad_fd(void)
-{
-    CHECK(write_all(-1, "x", 1) == -1, "잘못된 fd에 write_all을 하면 -1을 반환");
-    CHECK(errno == EBADF, "그때 errno는 EBADF");
-    CHECK(write_all(-1, "x", 0) == 0, "쓸 바이트가 0이면 write를 부르지 않고 0을 반환");
-}
-
 int main(void)
 {
     test_create_tcp_socket();
@@ -235,8 +149,5 @@ int main(void)
     test_set_reuseaddr();
     test_listen_port();
     test_accept_client();
-    test_write_all_small();
-    test_write_all_large();
-    test_write_all_bad_fd();
     return failures == 0 ? 0 : 1;
 }
