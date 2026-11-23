@@ -6,6 +6,8 @@
  * 단계 2: 요청의 첫 줄(요청 줄)을 세 칸으로 나누는 함수.
  * 단계 3: 연결 소켓에서 헤더의 끝(빈 줄, "\r\n\r\n")까지 읽는 함수.
  * 단계 4: 요청 대상을 파일 경로로 바꾸는 함수.
+ * 단계 6: 헤더 값을 찾는 함수, Content-Length 값을 숫자로 바꾸는 함수.
+ * 단계 7: 요청 본문을 Content-Length만큼 읽는 함수.
  * 단계 5: 요청 대상에서 쿼리 문자열을 떼는 함수, ".." 칸이 있는지 보는 함수.
  */
 
@@ -92,5 +94,38 @@ int split_target(const char *target, char *path, size_t size, const char **query
  *   예) "/../Makefile" → 1,  "/a/../b" → 1,  "/a..b/c" → 0 (칸 전체가 ".."인 경우만 해당),  "/..." → 0
  */
 int path_has_dotdot(const char *path);
+
+/*
+ * head(요청 줄과 헤더 전체가 담긴 문자열)에서 이름이 name인 헤더를 찾아 그 값을 value에 복사한다.
+ * 헤더 줄의 형식(RFC 9112 5절): 이름 ":" 값 CRLF      예) "Host: localhost:8080\r\n"
+ *   - 첫 줄(요청 줄)은 건너뛰고 둘째 줄부터 빈 줄 전까지 본다.
+ *   - 이름은 대소문자를 구분하지 않는다 ("content-length"와 "Content-Length"는 같은 헤더).
+ *   - 값 앞뒤의 공백과 탭은 떼어 낸다.
+ *   - 같은 이름의 헤더가 여러 줄이면 처음 것을 쓴다.
+ * 반환값: 찾았으면 0, 그런 헤더가 없으면 1, 값이 value(크기 size)에 다 들어가지 않으면 -1.
+ */
+int get_header(const char *head, const char *name, char *value, size_t size);
+
+/*
+ * Content-Length 헤더의 값(text)을 숫자로 바꿔 *out에 넣는다.
+ * 숫자(0~9)로만 이루어져 있어야 한다. 빈 문자열, 부호("-1", "+5"), 다른 글자("12a")가 있으면 실패다.
+ * 반환값: 성공하면 0, 형식이 틀리거나 너무 큰 수면 -1.
+ */
+int parse_content_length(const char *text, size_t *out);
+
+/* read_body의 반환값 */
+#define BODY_OK 0       /* content_length바이트를 모두 받았다 */
+#define BODY_CLOSED 1   /* 다 받기 전에 클라이언트가 연결을 닫았다 */
+#define BODY_ERROR (-1) /* read가 에러로 실패했다 */
+
+/*
+ * 요청 본문을 content_length바이트만큼 body에 채운다.
+ * 헤더를 읽을 때(read_request_head) 빈 줄 뒤의 본문 일부가 같은 버퍼에 함께 들어왔을 수 있다.
+ * 그 부분(already부터 already_len바이트)을 먼저 body에 복사하고, 모자란 만큼만 fd에서 read를 반복해 받는다.
+ * 본문에는 끝 표시가 없다. 그래서 "빈 줄을 찾을 때까지"가 아니라 "content_length바이트를 받을 때까지" 읽는다.
+ * body: content_length바이트 이상의 크기여야 한다. 이 함수는 끝에 '\0'을 붙이지 않는다.
+ * 반환값: BODY_OK, BODY_CLOSED, BODY_ERROR 중 하나.
+ */
+int read_body(int fd, const char *already, size_t already_len, char *body, size_t content_length);
 
 #endif /* HTTP_H */

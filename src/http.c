@@ -2,9 +2,11 @@
 
 #include <errno.h>     /* errno, EINTR */
 #include <stddef.h>    /* size_t, NULL */
+#include <stdint.h>    /* SIZE_MAX */
 #include <stdio.h>     /* perror, snprintf */
 #include <stdlib.h>    /* malloc, free */
-#include <string.h>    /* strstr, memchr, memcpy, strlen, strcspn */
+#include <string.h>    /* strstr, memchr, memcpy, strlen, strcspn, strchr */
+#include <strings.h>   /* strncasecmp */
 #include <sys/types.h> /* ssize_t */
 #include <unistd.h>    /* read */
 
@@ -211,4 +213,108 @@ int path_has_dotdot(const char *path)
         p += seg_len;
     }
     return 0;
+}
+
+int get_header(const char *head, const char *name, char *value, size_t size)
+{
+    size_t name_len = strlen(name);
+
+    /* 첫 줄(요청 줄)을 건너뛴다. strchr(문자열, 글자)는 글자가 처음 나오는 위치를 돌려준다. 없으면 NULL */
+    const char *line = strchr(head, '\n');
+    if (line == NULL) {
+        return 1;
+    }
+    line++; /* '\n' 다음 글자가 둘째 줄의 시작이다 */
+
+    /* 한 줄씩 본다. line은 지금 보는 줄의 첫 글자를 가리킨다 */
+    while (*line != '\0') {
+        /* 이 줄의 길이: '\n' 전까지의 글자 수. 줄 끝에 '\r'이 있으면 그것도 뺀다 */
+        size_t line_len = strcspn(line, "\n");
+        const char *next = line + line_len; /* '\n' 또는 문자열 끝 */
+        if (line_len > 0 && line[line_len - 1] == '\r') {
+            line_len--;
+        }
+        if (line_len == 0) {
+            break; /* 빈 줄이다. 헤더가 끝났다 */
+        }
+
+        /*
+         * 이 줄이 "name:"으로 시작하는지 본다.
+         * strncasecmp(a, b, n): 앞의 n글자를 대소문자 구분 없이 비교한다 (같으면 0).
+         */
+        if (line_len > name_len && line[name_len] == ':' && strncasecmp(line, name, name_len) == 0) {
+            /* 값은 ':' 다음부터 줄 끝까지다. 앞쪽의 공백과 탭을 건너뛴다 */
+            const char *v = line + name_len + 1;
+            size_t v_len = line_len - name_len - 1;
+            while (v_len > 0 && (*v == ' ' || *v == '\t')) {
+                v++;
+                v_len--;
+            }
+            /* 뒤쪽의 공백과 탭도 뗀다 */
+            while (v_len > 0 && (v[v_len - 1] == ' ' || v[v_len - 1] == '\t')) {
+                v_len--;
+            }
+            if (v_len >= size) {
+                return -1;
+            }
+            memcpy(value, v, v_len);
+            value[v_len] = '\0';
+            return 0;
+        }
+
+        /* 다음 줄로 넘어간다 */
+        if (*next == '\0') {
+            break;
+        }
+        line = next + 1;
+    }
+    return 1;
+}
+
+int parse_content_length(const char *text, size_t *out)
+{
+    if (text[0] == '\0') {
+        return -1; /* 빈 문자열 */
+    }
+    size_t value = 0;
+    for (const char *p = text; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9') {
+            return -1; /* 숫자가 아닌 글자 */
+        }
+        /* 글자 '0'~'9'에서 '0'을 빼면 숫자 0~9가 된다. 지금까지의 값에 10을 곱하고 더한다 */
+        size_t digit = (size_t)(*p - '0');
+        if (value > (SIZE_MAX - digit) / 10) {
+            return -1; /* 더 곱하면 size_t가 담을 수 있는 범위를 넘는다 */
+        }
+        value = value * 10 + digit;
+    }
+    *out = value;
+    return 0;
+}
+
+int read_body(int fd, const char *already, size_t already_len, char *body, size_t content_length)
+{
+    /* 헤더와 함께 이미 들어온 본문 부분을 먼저 복사한다. content_length보다 많이 들어왔으면 그만큼만 쓴다 */
+    size_t total = already_len;
+    if (total > content_length) {
+        total = content_length;
+    }
+    memcpy(body, already, total);
+
+    /* 모자란 만큼을 read로 받는다. 한 번에 다 오지 않을 수 있으므로 total이 content_length가 될 때까지 반복한다 */
+    while (total < content_length) {
+        ssize_t n = read(fd, body + total, content_length - total);
+        if (n == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("read");
+            return BODY_ERROR;
+        }
+        if (n == 0) {
+            return BODY_CLOSED;
+        }
+        total += (size_t)n;
+    }
+    return BODY_OK;
 }
