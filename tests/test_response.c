@@ -46,6 +46,8 @@ static void test_status_text(void)
     CHECK(strcmp(status_text(403), "Forbidden") == 0, "403은 Forbidden");
     CHECK(strcmp(status_text(404), "Not Found") == 0, "404는 Not Found");
     CHECK(strcmp(status_text(405), "Method Not Allowed") == 0, "405는 Method Not Allowed");
+    CHECK(strcmp(status_text(411), "Length Required") == 0, "411은 Length Required");
+    CHECK(strcmp(status_text(413), "Content Too Large") == 0, "413은 Content Too Large");
     CHECK(strcmp(status_text(500), "Internal Server Error") == 0, "500은 Internal Server Error");
     CHECK(strcmp(status_text(501), "Not Implemented") == 0, "501은 Not Implemented");
     CHECK(strcmp(status_text(505), "HTTP Version Not Supported") == 0, "505는 HTTP Version Not Supported");

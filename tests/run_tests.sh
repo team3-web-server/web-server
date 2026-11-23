@@ -110,6 +110,36 @@ check_raw "요청 대상이 /로 시작하지 않음" 'GET index.html HTTP/1.1\r
 longhdr=$(head -c 9000 /dev/zero | tr '\0' 'a')
 check_raw "버퍼(8192)보다 긴 헤더" "GET / HTTP/1.1\r\nHost: t\r\nX-Long: $longhdr\r\n\r\n" "HTTP/1.1 431 Request Header Fields Too Large"
 
+echo "== 헤더와 POST 본문 =="
+check_raw "HTTP/1.1인데 Host 헤더가 없음" 'GET / HTTP/1.1\r\n\r\n' "HTTP/1.1 400 Bad Request"
+check_raw "헤더 이름은 대소문자를 구분하지 않음 (hOsT)" 'GET / HTTP/1.1\r\nhOsT: t\r\n\r\n' "HTTP/1.1 200 OK"
+check_raw "POST에 Content-Length가 없음" 'POST /index.html HTTP/1.1\r\nHost: t\r\n\r\n' "HTTP/1.1 411 Length Required"
+check_raw "Content-Length가 숫자가 아님" 'POST /index.html HTTP/1.1\r\nHost: t\r\nContent-Length: abc\r\n\r\n' "HTTP/1.1 400 Bad Request"
+check_raw "Content-Length가 1MiB를 넘음" 'POST /index.html HTTP/1.1\r\nHost: t\r\nContent-Length: 1048577\r\n\r\n' "HTTP/1.1 413 Content Too Large"
+# curl -d '본문': POST 요청을 보내고 본문과 Content-Length 헤더를 붙여 준다
+got=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -d 'name=somang' "http://127.0.0.1:$port/index.html")
+if [ "$got" = "405" ]; then pass "curl -d로 보낸 POST (본문 11바이트): 405"; else bad "curl -d POST: 받은 코드 '$got'"; fi
+# 본문을 헤더와 따로, 두 조각으로 나눠 보낸다. 서버는 Content-Length(11)만큼 모아야 한다
+if connect_to_server; then
+  printf 'POST /index.html HTTP/1.1\r\nHost: t\r\nContent-Length: 11\r\n\r\n' >&3
+  sleep 0.2
+  printf 'hello' >&3
+  sleep 0.2
+  printf ' world' >&3
+  cat <&3 > "$resp"
+  exec 3>&-
+  if [ "$(head -n 1 "$resp" | tr -d '\r')" = "HTTP/1.1 405 Method Not Allowed" ]; then pass "본문을 두 조각으로 나눠 보낸 POST: 405"; else bad "본문을 나눠 보낸 POST"; fi
+fi
+# 본문 100000바이트 (헤더 버퍼 8192보다 큼): 파일로 만들어 curl --data-binary @파일 로 보낸다
+head -c 100000 /dev/zero | tr '\0' 'x' > "$body"
+got=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -H 'Expect:' --data-binary "@$body" "http://127.0.0.1:$port/index.html")
+if [ "$got" = "405" ]; then pass "본문 100000바이트 POST: 405"; else bad "본문 100000바이트 POST: 받은 코드 '$got'"; fi
+# Content-Length는 10인데 3바이트만 보내고 닫는다. 서버는 응답 없이 다음 연결로 넘어가야 한다
+if connect_to_server; then
+  printf 'POST /index.html HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc' >&3
+  exec 3>&-
+fi
+
 echo "== 연결 다루기 =="
 # 요청을 헤더 끝 표시 "\r\n\r\n"의 한가운데에서 잘라 두 번에 나눠 보낸다
 if connect_to_server; then
@@ -145,6 +175,16 @@ if grep -q "^파일 경로: $root/index.html$" "$out" && grep -q '^헤더가 끝
   pass "파일 경로와 빈 연결 메시지를 출력"
 else
   bad "서버 출력에 파일 경로 또는 빈 연결 메시지가 없음"
+fi
+if grep -q '^본문 11바이트: name=somang$' "$out" && grep -q '^본문 11바이트: hello world$' "$out" && grep -q '^본문 100000바이트: x' "$out"; then
+  pass "서버가 받은 본문이 보낸 것과 같음 (name=somang, hello world, 100000바이트)"
+else
+  bad "서버 출력의 본문이 기대와 다름"
+fi
+if grep -q '^Host 헤더: t$' "$out" && grep -q '^본문을 다 받기 전에 연결이 끊겼습니다 (Content-Length 10)$' "$out"; then
+  pass "Host 헤더 값과 본문 도중 끊긴 연결을 출력"
+else
+  bad "서버 출력에 Host 헤더 또는 끊긴 본문 메시지가 없음"
 fi
 # AddressSanitizer(make asan)가 메모리 오류를 찾으면 서버 출력에 ERROR: 줄을 남긴다
 if grep -q 'ERROR: ' "$out"; then bad "서버 출력에 ERROR가 있음:"; grep -A 12 'ERROR: ' "$out"; fi
