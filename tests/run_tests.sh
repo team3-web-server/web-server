@@ -22,6 +22,14 @@ cp -r www/. "$root"
 head -c 1048576 /dev/urandom > "$root/big.bin"
 printf 'secret\n' > "$root/noperm.txt"
 chmod 000 "$root/noperm.txt"   # 읽을 권한을 모두 없앤다
+# 실패하는 경우를 확인할 CGI 프로그램들. 셸 스크립트도 실행 권한이 있으면 execve로 실행된다 (첫 줄의 #!/bin/sh 덕분)
+printf '#!/bin/sh\nexit 3\n' > "$root/cgi-bin/fail"                         # 0이 아닌 값으로 끝남
+printf '#!/bin/sh\necho "no blank line"\n' > "$root/cgi-bin/noheader"       # 출력에 빈 줄이 없음
+printf '#!/bin/sh\nprintf "X-A: 1\\n\\nplain\\n"\n' > "$root/cgi-bin/notype"   # Content-Type 없이 \n만 쓰는 출력
+printf '#!/bin/sh\nprintf "Content-Type: text/plain\\r\\n\\r\\nignored stdin\\n"\n' > "$root/cgi-bin/noread"   # 표준 입력을 읽지 않음
+chmod +x "$root/cgi-bin/fail" "$root/cgi-bin/noheader" "$root/cgi-bin/notype" "$root/cgi-bin/noread"
+printf '#!/bin/sh\necho x\n' > "$root/cgi-bin/noexec"                        # 실행 권한 없음
+chmod 644 "$root/cgi-bin/noexec"
 
 out=$(mktemp)    # 서버 출력
 body=$(mktemp)   # 받은 응답 본문
@@ -139,6 +147,50 @@ if connect_to_server; then
   printf 'POST /index.html HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc' >&3
   exec 3>&-
 fi
+
+echo "== CGI (동적 요청) =="
+plain="text/plain; charset=utf-8"
+# check_body <이름> <찾을 글자>: 직전에 받은 본문($body)에 그 글자가 있는지 본다. grep -F 는 글자를 정규식이 아니라 그대로 찾는다
+check_body() {
+  if grep -qF -- "$2" "$body"; then pass "$1"; else bad "$1: 본문에 '$2'가 없음. 받은 본문:"; head -c 300 "$body"; fi
+}
+check_get "GET /cgi-bin/hello?name=somang" "/cgi-bin/hello?name=somang" 200 "$plain"
+check_body "CGI가 쿼리 문자열을 환경 변수로 받음" "QUERY_STRING=name=somang"
+check_body "CGI가 메서드를 환경 변수로 받음" "REQUEST_METHOD=GET"
+cp "$body" "$resp"
+check_get "GET /cgi-bin/hello?name=junho" "/cgi-bin/hello?name=junho" 200 "$plain"
+check_body "쿼리 문자열이 바뀌면 응답도 바뀜" "QUERY_STRING=name=junho"
+if cmp -s "$body" "$resp"; then bad "두 번의 CGI 응답이 같음 (요청마다 새로 만들어져야 함)"; else pass "두 번의 CGI 응답이 서로 다름 (요청마다 프로그램이 실행됨)"; fi
+check_get "쿼리 문자열 없는 CGI 요청" /cgi-bin/hello 200 "$plain"
+check_body "쿼리 문자열이 없으면 빈 값" "QUERY_STRING="
+
+got=$(curl -s --noproxy '*' -o "$body" -w '%{http_code} %{content_type}' -d 'msg=hello' "http://127.0.0.1:$port/cgi-bin/echo")
+if [ "$got" = "200 $plain" ]; then pass "POST /cgi-bin/echo: 200"; else bad "POST /cgi-bin/echo: 받은 것 '$got'"; fi
+check_body "CGI가 본문 길이를 환경 변수로 받음" "CONTENT_LENGTH=9"
+check_body "CGI가 표준 입력으로 본문을 받아 돌려줌" "msg=hello"
+# 본문 100000바이트: 파이프 버퍼(64KiB)보다 큰 본문도 CGI까지 그대로 전달되는지 본다
+head -c 100000 /dev/zero | tr '\0' 'y' > "$resp"
+got=$(curl -s --noproxy '*' -o "$body" -w '%{http_code}' -H 'Expect:' --data-binary "@$resp" "http://127.0.0.1:$port/cgi-bin/echo")
+if [ "$got" = "200" ] && [ "$(grep -c 'y' "$body")" -eq 1 ] && [ "$(tr -cd 'y' < "$body" | wc -c)" -eq 100000 ]; then
+  pass "본문 100000바이트를 CGI가 그대로 돌려줌"
+else
+  bad "본문 100000바이트 CGI: 코드 '$got', y 개수 $(tr -cd 'y' < "$body" | wc -c)"
+fi
+check_get "GET으로 echo를 부르면 본문 0바이트" /cgi-bin/echo 200 "$plain"
+check_body "본문이 없으면 CONTENT_LENGTH=0" "CONTENT_LENGTH=0"
+
+check_get "Content-Type을 쓰지 않는 CGI는 text/plain" /cgi-bin/notype 200 "$plain"
+check_body "줄 끝이 \\n뿐인 CGI 출력도 헤더와 본문을 나눔" "plain"
+check_get "없는 CGI 프로그램" /cgi-bin/nope 404 "$err"
+check_get "실행 권한이 없는 CGI 프로그램" /cgi-bin/noexec 403 "$err"
+check_get "0이 아닌 값으로 끝나는 CGI 프로그램" /cgi-bin/fail 500 "$err"
+check_get "출력에 빈 줄이 없는 CGI 프로그램" /cgi-bin/noheader 500 "$err"
+got=$(curl -s --noproxy '*' -o "$body" -w '%{http_code}' -d 'unused=1' "http://127.0.0.1:$port/cgi-bin/noread")
+if [ "$got" = "200" ]; then pass "표준 입력을 읽지 않는 CGI에 POST: 200 (서버가 끝나지 않음)"; else bad "표준 입력을 읽지 않는 CGI: '$got'"; fi
+check_raw "CGI 경로에도 구현하지 않은 메서드는 501" 'DELETE /cgi-bin/hello HTTP/1.1\r\nHost: t\r\n\r\n' "HTTP/1.1 501 Not Implemented"
+check_get "CGI 경로의 ../ 도 차단" /cgi-bin/../index.html 403 "$err"
+# pgrep -P <pid>: 그 프로세스의 자식 프로세스 번호들을 출력한다. waitpid로 모두 거뒀다면 남은 자식(좀비)이 없어야 한다
+if [ -z "$(pgrep -P "$pid")" ]; then pass "끝난 CGI 프로세스가 남아 있지 않음 (좀비 없음)"; else bad "서버의 자식 프로세스가 남아 있음: $(pgrep -P "$pid" | tr '\n' ' ')"; fi
 
 echo "== 연결 다루기 =="
 # 요청을 헤더 끝 표시 "\r\n\r\n"의 한가운데에서 잘라 두 번에 나눠 보낸다

@@ -351,6 +351,19 @@ static void test_get_header(void)
           "줄 끝이 \\r 없이 \\n만 있어도 찾음");
 }
 
+/* find_header: 첫 줄부터 헤더로 보고 찾는다 (CGI 프로그램의 출력에 쓴다) */
+static void test_find_header(void)
+{
+    char value[32];
+    const char *out = "Content-Type: text/html\r\nX-Other: 1\r\n\r\nContent-Type: fake\r\n";
+    CHECK(find_header(out, "Content-Type", value, sizeof(value)) == 0 && strcmp(value, "text/html") == 0,
+          "find_header는 첫 줄도 헤더로 봄");
+    CHECK(find_header(out, "X-Other", value, sizeof(value)) == 0 && strcmp(value, "1") == 0, "둘째 줄의 헤더도 찾음");
+    CHECK(find_header("\r\nContent-Type: fake\r\n", "Content-Type", value, sizeof(value)) == 1,
+          "빈 줄로 시작하면 헤더가 없는 것");
+    CHECK(find_header("", "Content-Type", value, sizeof(value)) == 1, "빈 문자열에는 헤더가 없음");
+}
+
 /* parse_content_length: Content-Length 값을 숫자로 바꾼다 */
 static void test_parse_content_length(void)
 {
@@ -435,6 +448,7 @@ int main(void)
     test_split_target();
     test_path_has_dotdot();
     test_get_header();
+    test_find_header();
     test_parse_content_length();
     test_read_body();
 
