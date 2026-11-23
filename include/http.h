@@ -107,6 +107,12 @@ int path_has_dotdot(const char *path);
 int get_header(const char *head, const char *name, char *value, size_t size);
 
 /*
+ * get_header와 같지만 첫 줄을 건너뛰지 않는다. lines의 첫 줄부터 빈 줄 전까지를 헤더 줄로 보고 찾는다.
+ * get_header가 요청 줄을 건너뛴 뒤 이 함수를 부른다. CGI 프로그램의 출력처럼 첫 줄부터 헤더인 글에서도 쓴다 (단계 8).
+ */
+int find_header(const char *lines, const char *name, char *value, size_t size);
+
+/*
  * Content-Length 헤더의 값(text)을 숫자로 바꿔 *out에 넣는다.
  * 숫자(0~9)로만 이루어져 있어야 한다. 빈 문자열, 부호("-1", "+5"), 다른 글자("12a")가 있으면 실패다.
  * 반환값: 성공하면 0, 형식이 틀리거나 너무 큰 수면 -1.

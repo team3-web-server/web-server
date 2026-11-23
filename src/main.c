@@ -10,6 +10,7 @@
 #include "net.h"
 
 #include <errno.h>      /* errno */
+#include <signal.h>     /* signal, SIGPIPE, SIG_IGN */
 #include <stdio.h>      /* printf, fprintf, perror, setvbuf */
 #include <stdlib.h>     /* strtol */
 #include <sys/socket.h> /* SOMAXCONN */
@@ -48,6 +49,14 @@ int main(int argc, char *argv[])
      * 이 프로세스는 Ctrl+C로 끝나기 때문에, 모아 둔 출력이 나가지 못한 채 사라지지 않게 한다.
      */
     setvbuf(stdout, NULL, _IOLBF, 0);
+
+    /*
+     * SIGPIPE 시그널을 무시한다(SIG_IGN).
+     * 읽는 쪽이 이미 닫힌 파이프나 소켓에 write하면 커널이 SIGPIPE를 보내는데, 기본 동작은 프로세스 종료다.
+     * CGI 프로그램이 본문을 읽지 않고 먼저 끝나면, 웹 서버 프로세스가 그 파이프에 write하다가 함께 끝나 버린다.
+     * 무시해 두면 write가 -1(errno는 EPIPE)을 돌려주고 프로세스는 계속 실행된다.
+     */
+    signal(SIGPIPE, SIG_IGN);
 
     /* 명령행 인자: 첫째는 포트, 둘째는 정적 파일 폴더. 없으면 기본값을 쓴다 */
     int port = DEFAULT_PORT;

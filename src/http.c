@@ -217,16 +217,21 @@ int path_has_dotdot(const char *path)
 
 int get_header(const char *head, const char *name, char *value, size_t size)
 {
-    size_t name_len = strlen(name);
-
     /* 첫 줄(요청 줄)을 건너뛴다. strchr(문자열, 글자)는 글자가 처음 나오는 위치를 돌려준다. 없으면 NULL */
     const char *line = strchr(head, '\n');
     if (line == NULL) {
         return 1;
     }
-    line++; /* '\n' 다음 글자가 둘째 줄의 시작이다 */
+    /* '\n' 다음 글자가 둘째 줄의 시작이다. 거기부터 헤더 줄들을 본다 */
+    return find_header(line + 1, name, value, size);
+}
+
+int find_header(const char *lines, const char *name, char *value, size_t size)
+{
+    size_t name_len = strlen(name);
 
     /* 한 줄씩 본다. line은 지금 보는 줄의 첫 글자를 가리킨다 */
+    const char *line = lines;
     while (*line != '\0') {
         /* 이 줄의 길이: '\n' 전까지의 글자 수. 줄 끝에 '\r'이 있으면 그것도 뺀다 */
         size_t line_len = strcspn(line, "\n");

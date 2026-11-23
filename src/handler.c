@@ -1,17 +1,20 @@
 #include "handler.h"
 
+#include "cgi.h"
 #include "http.h"
 #include "response.h"
 
 #include <stddef.h> /* size_t */
 #include <stdio.h>  /* printf, perror */
 #include <stdlib.h> /* malloc, free */
-#include <string.h> /* strcmp, strstr */
+#include <string.h> /* strcmp, strncmp, strstr */
 
 #define REQ_BUF_SIZE 8192  /* 요청 줄과 헤더를 받는 버퍼 크기(바이트). 마지막 한 바이트는 '\0' 자리로 남긴다 */
 #define PATH_BUF_SIZE 4096 /* 파일 경로를 담는 버퍼 크기(바이트). 리눅스가 받아 주는 경로 최대 길이(PATH_MAX)와 같다 */
 #define HEADER_VALUE_SIZE 256        /* 헤더 값 하나를 담는 버퍼 크기(바이트) */
 #define MAX_BODY_SIZE (1024 * 1024)  /* 받아 주는 요청 본문의 최대 크기: 1MiB. 넘으면 413 */
+
+#define CGI_PREFIX "/cgi-bin/" /* 경로가 이 글자들로 시작하면 정적 파일이 아니라 CGI 프로그램을 실행한다 */
 
 #define NO_RESPONSE 0 /* respond의 반환값: 응답을 보내지 않았다 (클라이언트가 먼저 연결을 닫음) */
 
@@ -124,31 +127,46 @@ static int respond(int conn_fd, const char *root, const struct http_request *req
 
     /*
      * 7) POST면 본문을 받는다. 실패하면 receive_body가 에러 응답을 이미 보냈으므로 그 코드를 그대로 돌려준다.
-     * 정적 파일은 POST를 허용하지 않으므로 본문을 받은 뒤 405를 보낸다.
      * 본문을 읽지 않은 채 응답하고 닫으면, 커널이 "읽지 않은 데이터가 있는 연결"을 강제로 끊어(RST)
-     * 클라이언트 프로세스가 응답을 못 받을 수 있다. 그래서 먼저 본문을 다 읽는다.
+     * 클라이언트 프로세스가 응답을 못 받을 수 있다. 그래서 어떤 응답을 보내든 먼저 본문을 다 읽는다.
      */
+    char *body = NULL;
+    size_t body_len = 0;
     if (is_post) {
-        char *body;
-        size_t body_len;
         int status = receive_body(conn_fd, head, head_len, &body, &body_len);
         if (status != 200) {
             return status;
         }
         /* %.*s: 문자열에서 앞의 정해진 글자 수까지만 출력한다. 긴 본문은 앞 200바이트만 보여 준다 */
         printf("본문 %zu바이트: %.*s\n", body_len, body_len > 200 ? 200 : (int)body_len, body);
-        free(body);
-        return send_error(conn_fd, 405);
     }
 
     /* 8) 정적 파일 폴더를 앞에 붙여 파일 경로를 만든다. '/'로 끝나면 index.html이 붙는다 */
     char file_path[PATH_BUF_SIZE];
     if (build_file_path(root, url_path, file_path, sizeof(file_path)) == -1) {
+        free(body); /* free(NULL)은 아무 일도 하지 않으므로 GET이어도 그대로 불러도 된다 */
         return send_error(conn_fd, 414);
     }
     printf("파일 경로: %s\n", file_path);
 
-    /* 9) 파일을 열어 보낸다. 파일이 없거나 열 수 없으면 send_file이 404, 403, 500 중 하나를 보낸다 */
+    /*
+     * 9) 경로가 "/cgi-bin/"으로 시작하면 그 파일을 보내는 대신 프로그램으로 실행한다 (동적 요청).
+     * strncmp(a, b, n): 앞의 n글자만 비교한다 (같으면 0). sizeof(CGI_PREFIX) - 1은 끝의 '\0'을 뺀 글자 수 9다.
+     * 메서드, 쿼리 문자열, 본문을 넘기고, 프로그램의 출력을 응답으로 보낸다. GET과 POST 모두 받는다.
+     */
+    if (strncmp(url_path, CGI_PREFIX, sizeof(CGI_PREFIX) - 1) == 0) {
+        int status = run_cgi(conn_fd, file_path, req->method, query, body, body_len);
+        free(body);
+        return status;
+    }
+
+    /* 10) 정적 파일은 GET으로만 받는다. POST면 405 */
+    if (is_post) {
+        free(body);
+        return send_error(conn_fd, 405);
+    }
+
+    /* 11) 파일을 열어 보낸다. 파일이 없거나 열 수 없으면 send_file이 404, 403, 500 중 하나를 보낸다 */
     return send_file(conn_fd, file_path);
 }
 
