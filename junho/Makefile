@@ -1,5 +1,5 @@
 # =====================================================================
-# 과제용 웹 서버 빌드 규칙 (저장소 루트에서 make를 실행한다)
+# 과제용 웹 서버 빌드 규칙 (junho/에서 make를 실행한다)
 #   make        : build/server와 www/cgi-bin의 CGI 프로그램 빌드
 #   make test   : 서버를 빌드한 뒤 tests/server_test.sh 실행
 #   make clean  : build/와 CGI 실행 파일 삭제
