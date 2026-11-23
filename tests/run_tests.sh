@@ -4,7 +4,8 @@
 #   1) 서버를 띄우고 HTTP 요청을 두 조각으로 나눠 보낸 뒤, 서버가 요청 줄을 세 칸으로 나눠 출력하고
 #      고정 응답(200 OK, <h1>Hello</h1>)을 보내고 정상 종료(종료 코드 0)하는지 확인
 #   2) 서버를 다시 띄우고 아무것도 보내지 않은 채 연결을 닫아도 서버가 정상 종료하는지 확인
-#   3) 단위 테스트 실행 파일들을 차례로 돌려 모두 PASS인지 확인
+#   3) 서버를 다시 띄우고 버퍼(8192바이트)보다 긴 헤더를 보내면 431 응답이 오는지 확인
+#   4) 단위 테스트 실행 파일들을 차례로 돌려 모두 PASS인지 확인
 set -u
 
 bin="${1:-build/server}"
@@ -84,6 +85,29 @@ else
   fail=1
 fi
 rm -f "$out"
+
+echo "== 서버 실행 3: 버퍼보다 긴 헤더를 보냄 ($bin) =="
+resp=$(mktemp)
+if start_server_and_connect; then
+  # 값이 'a' 9000개인 헤더 줄 하나를 보낸다. 요청 전체가 버퍼 8192바이트보다 길다.
+  # head -c 9000 /dev/zero 는 0 바이트 9000개를 내고, tr 이 그것을 글자 a로 바꾼다.
+  long=$(head -c 9000 /dev/zero | tr '\0' 'a')
+  printf 'GET / HTTP/1.1\r\nHost: localhost:8080\r\nX-Long: %s\r\n\r\n' "$long" >&3 2>/dev/null
+  cat <&3 > "$resp" 2>/dev/null
+fi
+wait "$pid"
+code=$?
+exec 3>&-
+cat "$out"
+# head -n 1: 첫 줄만. tr -d '\r': 줄 끝의 \r을 지운다
+status=$(head -n 1 "$resp" | tr -d '\r')
+if [ "$code" -eq 0 ] && [ "$status" = "HTTP/1.1 431 Request Header Fields Too Large" ] && grep -q '^Content-Length: 45' "$resp"; then
+  echo "PASS: $bin 버퍼보다 긴 헤더에는 431 응답을 보내고 종료 코드 0"
+else
+  echo "FAIL: $bin 종료 코드 $code, 받은 상태 줄: '$status'"
+  fail=1
+fi
+rm -f "$out" "$resp"
 
 for testbin in "$@"; do
   echo "== 단위 테스트: $testbin =="

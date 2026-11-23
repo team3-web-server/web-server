@@ -2,7 +2,7 @@
  * 웹 서버 진입점.
  * 단계 3: TCP 소켓을 만들고 8080번 포트에 bind → listen → 연결 하나를 accept
  *         → 헤더의 끝(빈 줄)까지 read를 반복해 요청을 받고 → 요청 줄을 세 칸으로 나눠 출력
- *         → 고정 응답(200 OK, <h1>Hello</h1>)을 보내고 → 닫고 종료한다.
+ *         → 고정 응답(200 OK, <h1>Hello</h1>)을 보내고 → 닫고 종료한다. 헤더가 버퍼보다 길면 431 에러 응답을 보낸다.
  * 요청 내용에 따라 응답을 바꾸는 것, 연결을 여러 번 받는 반복은 아직 없다.
  */
 #include "http.h"
@@ -33,6 +33,19 @@
     "Connection: close\r\n"         \
     "\r\n"                          \
     "<h1>Hello</h1>\n"
+
+/*
+ * 헤더가 버퍼(REQ_BUF_SIZE)보다 길 때 보내는 에러 응답.
+ * 431 Request Header Fields Too Large: 요청의 헤더가 너무 커서 서버가 처리하지 않겠다는 상태 코드 (RFC 6585 5절).
+ * 본문 "<h1>431 Request Header Fields Too Large</h1>\n"은 45바이트
+ */
+#define RESPONSE_431                                   \
+    "HTTP/1.1 431 Request Header Fields Too Large\r\n" \
+    "Content-Type: text/html\r\n"                      \
+    "Content-Length: 45\r\n"                           \
+    "Connection: close\r\n"                            \
+    "\r\n"                                             \
+    "<h1>431 Request Header Fields Too Large</h1>\n"
 
 int main(void)
 {
@@ -94,8 +107,14 @@ int main(void)
         /* 헤더가 끝나기 전에 클라이언트가 연결을 닫았다. 응답을 받을 상대가 없으므로 보내지 않는다 */
         printf("헤더가 끝나기 전에 연결이 닫혔습니다\n");
     } else if (head == HEAD_TOO_LARGE) {
-        /* 헤더가 버퍼보다 길다. 지금은 응답 없이 닫는다. 에러 응답(400 등)을 보내는 것은 단계 5에서 한다 */
+        /* 헤더가 버퍼보다 길다. 요청을 해석하지 않고 431 에러 응답을 보낸다 */
         printf("헤더가 너무 깁니다 (버퍼 %d바이트)\n", REQ_BUF_SIZE);
+        if (write_all(conn_fd, RESPONSE_431, sizeof(RESPONSE_431) - 1) == -1) {
+            close(conn_fd);
+            close(fd);
+            return 1;
+        }
+        printf("431 응답을 보냈습니다 (%zu바이트)\n", sizeof(RESPONSE_431) - 1);
     } else {
         /*
          * 요청 줄을 메서드, 요청 대상, 버전 세 칸으로 나눠 출력한다 (단계 2의 파서).
