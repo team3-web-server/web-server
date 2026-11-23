@@ -2,9 +2,12 @@
 #define HTTP_H
 
 /*
- * HTTP 요청을 해석하는 함수 모음.
- * 단계 2: 요청의 첫 줄(요청 줄)을 세 칸으로 나누는 함수만 있다.
+ * HTTP 요청을 읽고 해석하는 함수 모음.
+ * 단계 2: 요청의 첫 줄(요청 줄)을 세 칸으로 나누는 함수.
+ * 단계 3: 연결 소켓에서 헤더의 끝(빈 줄, "\r\n\r\n")까지 읽는 함수.
  */
+
+#include <stddef.h> /* size_t */
 
 /*
  * 요청 줄을 나눈 결과. 세 칸 모두 '\0'으로 끝나는 C 문자열이고,
@@ -39,5 +42,24 @@ int parse_request_line(const char *buf, struct http_request *req);
  * req가 NULL이거나 이미 해제된 뒤(포인터가 NULL)에 불러도 안전하다.
  */
 void free_request(struct http_request *req);
+
+/* read_request_head의 반환값 */
+#define HEAD_OK 0         /* "\r\n\r\n"을 찾았다. 헤더를 끝까지 받았다 */
+#define HEAD_CLOSED 1     /* "\r\n\r\n"이 오기 전에 클라이언트가 연결을 닫았다 (read가 0을 반환) */
+#define HEAD_TOO_LARGE 2  /* 버퍼가 가득 찼는데도 "\r\n\r\n"이 없다 (헤더가 버퍼보다 길다) */
+#define HEAD_ERROR (-1)   /* read가 에러로 실패했다 (errno 내용은 stderr에 출력) */
+
+/*
+ * 연결 소켓 fd에서 헤더의 끝 "\r\n\r\n"이 나올 때까지 read를 반복해 buf에 이어 붙인다.
+ * TCP는 바이트 스트림이라 요청 하나가 read 여러 번에 나뉘어 올 수 있다.
+ * 그래서 매번 "이번에 받은 조각"이 아니라 "지금까지 받은 전체"에서 "\r\n\r\n"을 찾는다.
+ * buf:  받은 바이트를 담을 버퍼. 함수가 돌아올 때 항상 '\0'으로 끝난다.
+ * size: buf의 크기(바이트). 마지막 한 바이트는 '\0' 자리라서 최대 size - 1바이트까지 받는다.
+ * len:  지금까지 받은 바이트 수를 써 넣을 곳 ('\0'은 세지 않는다).
+ * 반환값: HEAD_OK, HEAD_CLOSED, HEAD_TOO_LARGE, HEAD_ERROR 중 하나.
+ *         buf나 len이 NULL이거나 size가 2보다 작으면 HEAD_ERROR.
+ * read가 시그널 때문에 중단되면(errno == EINTR) 에러로 보지 않고 다시 read한다.
+ */
+int read_request_head(int fd, char *buf, size_t size, size_t *len);
 
 #endif /* HTTP_H */
