@@ -3,7 +3,7 @@
 # 사용법: bash tests/run_tests.sh <서버 실행 파일> <단위 테스트 실행 파일>...
 #   1) 임시 폴더에 www/ 를 복사해 정적 파일 폴더로 쓰고, 서버를 포트 18090으로 한 번 띄운다.
 #   2) curl과 직접 만든 요청으로 응답의 상태 코드, Content-Type, 본문을 검사한다.
-#   3) 서버가 끝까지 살아 있는지 확인하고 끝낸다(kill). 서버 출력도 검사한다.
+#   3) 동시 연결, 안전 종료(SIGTERM, SIGINT)를 검사하고, 서버 출력도 검사한다.
 #   4) 단위 테스트 실행 파일들을 돌린다.
 set -u
 
@@ -20,6 +20,7 @@ root=$(mktemp -d)
 cp -r www/. "$root"
 # 1MiB(1048576바이트)짜리 파일. 버퍼(8192바이트)보다 커서 read/write 반복을 여러 번 돌게 한다
 head -c 1048576 /dev/urandom > "$root/big.bin"
+head -c 8388608 /dev/zero > "$root/huge.bin"   # 8MiB. 응답 도중 클라이언트가 끊는 상황을 만들 때 쓴다
 printf 'secret\n' > "$root/noperm.txt"
 chmod 000 "$root/noperm.txt"   # 읽을 권한을 모두 없앤다
 # 실패하는 경우를 확인할 CGI 프로그램들. 셸 스크립트도 실행 권한이 있으면 execve로 실행된다 (첫 줄의 #!/bin/sh 덕분)
@@ -189,8 +190,6 @@ got=$(curl -s --noproxy '*' -o "$body" -w '%{http_code}' -d 'unused=1' "http://1
 if [ "$got" = "200" ]; then pass "표준 입력을 읽지 않는 CGI에 POST: 200 (서버가 끝나지 않음)"; else bad "표준 입력을 읽지 않는 CGI: '$got'"; fi
 check_raw "CGI 경로에도 구현하지 않은 메서드는 501" 'DELETE /cgi-bin/hello HTTP/1.1\r\nHost: t\r\n\r\n' "HTTP/1.1 501 Not Implemented"
 check_get "CGI 경로의 ../ 도 차단" /cgi-bin/../index.html 403 "$err"
-# pgrep -P <pid>: 그 프로세스의 자식 프로세스 번호들을 출력한다. waitpid로 모두 거뒀다면 남은 자식(좀비)이 없어야 한다
-if [ -z "$(pgrep -P "$pid")" ]; then pass "끝난 CGI 프로세스가 남아 있지 않음 (좀비 없음)"; else bad "서버의 자식 프로세스가 남아 있음: $(pgrep -P "$pid" | tr '\n' ' ')"; fi
 
 echo "== 연결 다루기 =="
 # 요청을 헤더 끝 표시 "\r\n\r\n"의 한가운데에서 잘라 두 번에 나눠 보낸다
@@ -205,24 +204,88 @@ fi
 # 아무것도 보내지 않고 닫는다. 서버는 응답 없이 다음 연결로 넘어가야 한다
 if connect_to_server; then exec 3>&-; fi
 check_get "빈 연결 뒤에도 다음 요청을 받음" / 200 "text/html; charset=utf-8"
+# 8MiB 파일을 요청하고 응답을 읽지 않은 채 바로 닫는다. 서버는 받는 쪽이 없는 연결에 write하게 된다 (SIGPIPE 상황)
+if connect_to_server; then
+  printf 'GET /huge.bin HTTP/1.1\r\nHost: t\r\n\r\n' >&3
+  sleep 0.1
+  exec 3>&-
+fi
+sleep 0.3
+check_get "응답 도중 클라이언트가 끊은 뒤에도 다음 요청을 받음" / 200 "text/html; charset=utf-8"
 
-sleep 0.2   # 서버가 마지막 연결을 닫고 출력을 끝낼 시간을 준다
+echo "== 동시 연결 (연결마다 fork) =="
+# 연결 A: 요청의 앞부분만 보내고 멈춰 둔다 (fd 3번을 연 채로 둔다)
+if connect_to_server; then
+  printf 'GET /index.html HTTP/1.1\r\nHost: t\r\n' >&3
+  # 연결 B: A가 아직 끝나지 않았는데도 응답을 받아야 한다. --max-time 3: 3초 안에 못 받으면 실패
+  got=$(curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/style.css")
+  if [ "$got" = "200" ]; then pass "멈춰 있는 연결 A가 있어도 연결 B가 응답을 받음"; else bad "연결 A가 멈춘 동안 연결 B가 응답을 못 받음 (받은 코드 '$got')"; fi
+  # 이제 A의 나머지를 보낸다. A도 정상 응답을 받아야 한다
+  printf '\r\n' >&3
+  cat <&3 > "$resp"
+  exec 3>&-
+  if [ "$(head -n 1 "$resp" | tr -d '\r')" = "HTTP/1.1 200 OK" ]; then pass "멈춰 있던 연결 A도 나머지를 보내자 200을 받음"; else bad "연결 A가 응답을 못 받음"; fi
+fi
+# 요청 30개를 동시에 보낸다. 명령 끝의 & 는 끝나기를 기다리지 않고 다음 명령으로 넘어가게 하고, wait 는 모두 끝날 때까지 기다린다
+codes=$(mktemp)
+for i in $(seq 1 30); do
+  curl -s --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$port/cgi-bin/hello?n=$i" >> "$codes" &
+done
+wait $(jobs -p | grep -v "^$pid$") 2>/dev/null
+ok=$(grep -c '^200$' "$codes")
+if [ "$ok" -eq 30 ]; then pass "동시에 보낸 요청 30개가 모두 200"; else bad "동시 요청 30개 중 200은 ${ok}개"; fi
+rm -f "$codes"
+
+sleep 0.5   # 자식 프로세스들이 연결을 닫고 끝날 시간을 준다
+# pgrep -P <pid>: 그 프로세스의 자식 프로세스 번호들을 출력한다. SIGCHLD 핸들러가 모두 거뒀다면 남은 자식(좀비)이 없어야 한다
+if [ -z "$(pgrep -P "$pid")" ]; then pass "끝난 자식 프로세스가 남아 있지 않음 (좀비 없음)"; else bad "서버의 자식 프로세스가 남아 있음: $(pgrep -P "$pid" | tr '\n' ' ')"; fi
 # kill -0 은 신호를 보내지 않고 그 프로세스가 있는지만 확인한다 (있으면 0)
 if kill -0 "$pid" 2>/dev/null; then pass "모든 요청을 처리한 뒤에도 서버 프로세스가 실행 중"; else bad "서버 프로세스가 도중에 종료됨"; fi
-kill "$pid" 2>/dev/null       # 서버에 종료 신호(SIGTERM)를 보낸다
-wait "$pid" 2>/dev/null       # 서버가 끝날 때까지 기다린다
+
+echo "== 안전 종료 =="
+# 멈춰 있는 연결을 하나 만든 뒤 SIGTERM을 보낸다. 서버는 새 연결을 받지 않고, 이 연결이 끝나기를 기다렸다가 끝나야 한다
+if connect_to_server; then
+  printf 'GET /index.html HTTP/1.1\r\nHost: t\r\n' >&3
+  sleep 0.2
+  kill "$pid" 2>/dev/null       # kill의 기본 시그널은 SIGTERM
+  sleep 0.3
+  if kill -0 "$pid" 2>/dev/null; then pass "SIGTERM을 받아도 처리 중인 연결이 있으면 기다림"; else bad "처리 중인 연결을 두고 서버가 끝남"; fi
+  printf '\r\n' >&3
+  cat <&3 > "$resp"
+  exec 3>&-
+  if [ "$(head -n 1 "$resp" | tr -d '\r')" = "HTTP/1.1 200 OK" ]; then pass "종료 요청 전에 받은 연결은 끝까지 응답함"; else bad "종료 중에 처리하던 연결이 응답을 못 받음"; fi
+else
+  kill "$pid" 2>/dev/null
+fi
+wait "$pid" 2>/dev/null       # 서버가 끝날 때까지 기다린다. wait의 종료 코드는 서버의 종료 코드다
+code=$?
+if [ "$code" -eq 0 ]; then pass "SIGTERM 뒤 서버가 종료 코드 0으로 끝남"; else bad "SIGTERM 뒤 서버의 종료 코드가 $code (0이어야 함)"; fi
+
+# 서버를 다시 띄워 SIGINT(터미널의 Ctrl+C와 같은 시그널)로도 끝나는지 본다
+out2=$(mktemp)
+"$bin" "$port" "$root" > "$out2" 2>&1 &
+pid2=$!
+if connect_to_server; then exec 3>&-; fi
+sleep 0.2
+kill -INT "$pid2" 2>/dev/null
+wait "$pid2" 2>/dev/null
+code=$?
+if [ "$code" -eq 0 ] && grep -q '^웹 서버 프로세스를 끝냅니다$' "$out2"; then pass "SIGINT 뒤 서버가 종료 코드 0으로 끝남"; else bad "SIGINT 뒤 종료 코드 $code 또는 종료 메시지 없음"; fi
+if grep -q 'ERROR: ' "$out2"; then bad "두 번째 서버 출력에 ERROR가 있음:"; grep -A 12 'ERROR: ' "$out2"; fi
+rm -f "$out2"
 
 echo "== 서버 출력 검사 =="
 accepted=$(grep -c '^연결 수락: ' "$out")
-closed=$(grep -c '^연결을 닫았습니다 (conn fd = ' "$out")
+closed=$(grep -c '^연결을 닫았습니다 (자식 프로세스 ' "$out")
 if [ "$accepted" -gt 0 ] && [ "$accepted" -eq "$closed" ]; then
-  pass "연결 수락 ${accepted}번, 연결 닫기 ${closed}번 (같음)"
+  pass "연결 수락 ${accepted}번, 자식 프로세스가 연결을 닫은 것 ${closed}번 (같음)"
 else
-  bad "연결 수락 ${accepted}번, 연결 닫기 ${closed}번 (같아야 함)"
+  bad "연결 수락 ${accepted}번, 자식 프로세스가 연결을 닫은 것 ${closed}번 (같아야 함)"
 fi
-# 닫은 conn fd 번호의 종류를 센다. 매번 닫고 파일 fd도 닫으므로 같은 번호가 다시 쓰여 한 종류여야 한다
-kinds=$(grep '^연결을 닫았습니다 (conn fd = ' "$out" | sort -u | wc -l)
-if [ "$kinds" -eq 1 ]; then pass "모든 연결이 같은 conn fd 번호를 다시 씀 (연결과 파일을 매번 close했다는 뜻)"; else bad "conn fd 번호가 ${kinds}종류 (닫지 않은 fd가 있음)"; fi
+# 부모 프로세스가 받은 conn fd 번호의 종류를 센다. 부모가 자기 몫을 매번 닫으면 같은 번호가 다시 쓰여 한 종류여야 한다
+# sed 's/.*(conn fd = //' 는 줄에서 "(conn fd = " 까지를 지워 번호만 남긴다
+kinds=$(grep '에게 연결을 맡겼습니다 (conn fd = ' "$out" | sed 's/.*(conn fd = //' | sort -u | wc -l)
+if [ "$kinds" -eq 1 ]; then pass "부모 프로세스의 conn fd 번호가 한 종류 (부모가 연결마다 자기 몫을 close했다는 뜻)"; else bad "부모의 conn fd 번호가 ${kinds}종류 (닫지 않은 fd가 있음)"; fi
 if grep -q "^파일 경로: $root/index.html$" "$out" && grep -q '^헤더가 끝나기 전에 연결이 닫혔습니다$' "$out"; then
   pass "파일 경로와 빈 연결 메시지를 출력"
 else
@@ -238,7 +301,13 @@ if grep -q '^Host 헤더: t$' "$out" && grep -q '^본문을 다 받기 전에 �
 else
   bad "서버 출력에 Host 헤더 또는 끊긴 본문 메시지가 없음"
 fi
-# AddressSanitizer(make asan)가 메모리 오류를 찾으면 서버 출력에 ERROR: 줄을 남긴다
+if grep -q '^종료 요청을 받았습니다' "$out" && grep -q '^웹 서버 프로세스를 끝냅니다$' "$out"; then
+  pass "종료 요청과 종료 메시지를 출력"
+else
+  bad "서버 출력에 종료 메시지가 없음"
+fi
+# AddressSanitizer(make asan)가 메모리 오류나 누수를 찾으면 서버 출력에 ERROR: 줄을 남긴다.
+# 부모와 자식 프로세스 모두 정상 종료(return, exit)하므로 끝날 때 누수 검사가 실행된다
 if grep -q 'ERROR: ' "$out"; then bad "서버 출력에 ERROR가 있음:"; grep -A 12 'ERROR: ' "$out"; fi
 
 chmod 644 "$root/noperm.txt"
