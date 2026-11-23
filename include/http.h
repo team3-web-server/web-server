@@ -6,6 +6,7 @@
  * 단계 2: 요청의 첫 줄(요청 줄)을 세 칸으로 나누는 함수.
  * 단계 3: 연결 소켓에서 헤더의 끝(빈 줄, "\r\n\r\n")까지 읽는 함수.
  * 단계 4: 요청 대상을 파일 경로로 바꾸는 함수.
+ * 단계 5: 요청 대상에서 쿼리 문자열을 떼는 함수, ".." 칸이 있는지 보는 함수.
  */
 
 #include <stddef.h> /* size_t */
@@ -73,5 +74,23 @@ int read_request_head(int fd, char *buf, size_t size, size_t *len);
  * 반환값: 성공하면 0. 결과가 path에 다 들어가지 않으면(잘리면) -1. 이때 path의 내용은 쓰면 안 된다.
  */
 int build_file_path(const char *root, const char *target, char *path, size_t size);
+
+/*
+ * 요청 대상(target)을 '?' 기준으로 경로와 쿼리 문자열로 나눈다.
+ *   예) "/search.html?q=abc" → 경로 "/search.html", 쿼리 문자열 "q=abc"
+ *       "/index.html"        → 경로 "/index.html",  쿼리 문자열 "" (빈 문자열)
+ * 경로는 path 버퍼(크기 size)에 복사한다. 파일을 찾을 때는 경로만 쓴다.
+ * query에는 target 안에서 '?' 다음 글자를 가리키는 포인터를 넣는다 ('?'가 없으면 target 끝의 '\0'을 가리킨다).
+ * query는 복사본이 아니라 target의 일부를 가리키므로 target이 해제된 뒤에는 쓰면 안 된다.
+ * 반환값: 성공하면 0. 경로가 path에 다 들어가지 않으면 -1.
+ */
+int split_target(const char *target, char *path, size_t size, const char **query);
+
+/*
+ * 경로를 '/'로 나눈 칸 중에 ".."이 있으면 1, 없으면 0을 돌려준다.
+ * ".."은 "한 단계 위 폴더"라는 뜻이라서, 그대로 파일 경로에 붙이면 정적 파일 폴더 밖의 파일을 가리킬 수 있다.
+ *   예) "/../Makefile" → 1,  "/a/../b" → 1,  "/a..b/c" → 0 (칸 전체가 ".."인 경우만 해당),  "/..." → 0
+ */
+int path_has_dotdot(const char *path);
 
 #endif /* HTTP_H */

@@ -1,0 +1,4 @@
+/* 이 파일이 text/css로 전달되면 브라우저가 아래 규칙을 적용한다 */
+body { font-family: sans-serif; margin: 2rem; }
+h1 { color: #1a5fb4; }
+code { background: #eee; padding: 0 0.3em; }

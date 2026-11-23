@@ -4,7 +4,7 @@
 #include <stddef.h>    /* size_t, NULL */
 #include <stdio.h>     /* perror, snprintf */
 #include <stdlib.h>    /* malloc, free */
-#include <string.h>    /* strstr, memchr, memcpy, strlen */
+#include <string.h>    /* strstr, memchr, memcpy, strlen, strcspn */
 #include <sys/types.h> /* ssize_t */
 #include <unistd.h>    /* read */
 
@@ -171,6 +171,44 @@ int build_file_path(const char *root, const char *target, char *path, size_t siz
     int n = snprintf(path, size, "%s%s%s", root, target, index);
     if (n >= (int)size) {
         return -1;
+    }
+    return 0;
+}
+
+int split_target(const char *target, char *path, size_t size, const char **query)
+{
+    /* strcspn(문자열, "?"): 문자열 처음부터 '?'가 나오기 전까지의 글자 수. '?'가 없으면 문자열 전체 길이 */
+    size_t path_len = strcspn(target, "?");
+    if (path_len >= size) {
+        return -1; /* 경로와 끝의 '\0'이 버퍼에 들어가지 않는다 */
+    }
+    memcpy(path, target, path_len);
+    path[path_len] = '\0';
+
+    /* target[path_len]은 '?'이거나 문자열 끝('\0')이다. '?'이면 그 다음 글자부터가 쿼리 문자열이다 */
+    if (target[path_len] == '?') {
+        *query = target + path_len + 1;
+    } else {
+        *query = target + path_len;
+    }
+    return 0;
+}
+
+int path_has_dotdot(const char *path)
+{
+    /* p는 지금 보고 있는 칸의 첫 글자를 가리킨다. '/'를 만날 때마다 다음 칸으로 넘어간다 */
+    const char *p = path;
+    while (*p != '\0') {
+        if (*p == '/') {
+            p++;
+            continue;
+        }
+        /* 칸의 길이: 다음 '/' 또는 문자열 끝까지의 글자 수 */
+        size_t seg_len = strcspn(p, "/");
+        if (seg_len == 2 && p[0] == '.' && p[1] == '.') {
+            return 1;
+        }
+        p += seg_len;
     }
     return 0;
 }
