@@ -1,12 +1,58 @@
-# junho/: 준호의 작업 폴더
+# web-server
 
-팀원마다 폴더를 나눠 따로 개발한다. 루트의 `src/`, `include/`, `tests/`, `Makefile`은 소망의 코드이고, 준호의 코드는 모두 이 폴더 안에 있다.
+CS:APP 11장 Tiny를 바탕으로 만든 HTTP/1.0 웹 서버. TCP 소켓으로 연결을 받고, HTTP 요청을 파싱해 정적 파일이나 CGI 응답을 보낸다.
 
-| 위치 | 내용 | 명령 (이 폴더 기준) |
-|---|---|---|
-| `src/`, `include/`, `tests/`, `Makefile` | 단계 1 서버와 CS:APP 11장 Tiny HTTP 서버 소스. `src/step1_main.c`·`src/net.c`는 단계 1(`open_listenfd`로 듣기 소켓을 열고 연결 하나를 `accept`한 뒤 닫기), `src/tiny.c`·`src/netlib.c`는 Tiny | `make`(둘 다 빌드), `make test`, `make tiny-test`, `make asan`, `./build/server 8080` |
-| `docs/step1.md` | 단계 1의 결정사항·이유·개념·확인 결과 | - |
-| `docs/hints.md` | 필수 구현 항목별 힌트, 공통 함정, 확인 명령, 작업 순서 | - |
-| `tiny/` | Tiny 실행에 필요한 CGI·에셋과 에코/hostinfo 보조 예제, 테스트. 서버 소스는 `src/`로 옮겼다. 자세한 내용은 `tiny/README.md` | `make -C tiny`, `make -C tiny test` |
+## 구조
 
-빌드 결과물(`build/`, `tiny/`의 실행 파일)은 git에 올리지 않는다.
+| 경로 | 내용 |
+|---|---|
+| `src/server_main.c` | `main`, accept 루프, SIGCHLD·SIGPIPE 처리 |
+| `src/http.c`, `include/http.h` | 요청 줄·헤더·본문 파싱, 오류 응답 |
+| `src/serve.c`, `include/serve.h` | 정적 파일, CGI 실행 |
+| `src/netlib.c`, `include/netlib.h` | Rio I/O, `Open_listenfd`, 책 스타일 래퍼 |
+| `www/` | 문서 루트. `home.html`, `godzilla.gif`, `sample.mpg`, `adder.html`, `cgi-bin/` |
+| `tests/server_test.sh` | 정적·CGI·HEAD·POST·오류·SIGPIPE 통합 테스트 |
+
+## 빌드와 실행
+
+```
+make
+cd www
+../build/server 8000
+```
+
+브라우저나 `curl`로 연다.
+
+```
+http://localhost:8000/                    # home.html
+http://localhost:8000/adder.html          # 덧셈 폼
+http://localhost:8000/cgi-bin/adder?1&2   # 1 + 2 = 3
+curl -X POST --data-binary 'hello' http://localhost:8000/cgi-bin/postecho
+```
+
+## 테스트
+
+```
+make test
+```
+
+서버를 `www/`에서 띄우고 `curl`·`nc`로 다음을 확인한다.
+
+- 정적 파일 본문·MIME(`text/html`, `image/gif`, `video/mpeg`)·0바이트·큰 파일
+- CGI adder(GET 폼과 `1&2`), POST 본문 에코
+- HEAD(정적·CGI·404), 400·403·404·405·413·414·431·501·505
+- CGI 자식 회수(SIGCHLD), 조기 종료 뒤 서버 생존(SIGPIPE/EPIPE)
+
+## 지원 범위
+
+- 메서드: `GET`, `HEAD`, `POST`
+- 정적 파일: `www/` 기준, `Content-Type`/`Content-Length`/`Connection: close`
+- 동적: `/cgi-bin/` CGI (`fork`+`execve`, GET/HEAD/POST, `tmpfile`로 본문 전달)
+- 오류: 400, 403, 404, 405, 413, 414, 431, 500, 501, 505
+
+## 아직 없는 것
+
+- **동시 요청 처리**: 현재 한 연결을 끝낸 뒤 다음 `accept`를 한다. 과제 필수 항목이라 thread/poll 방식 중 하나를 추가해야 한다.
+- Reverse Proxy: 동적 요청은 CGI로 처리한다.
+- HTTP/1.1 keep-alive, TLS, 압축, 디렉터리 목록.
+- 퍼센트 인코딩(`%2e%2e`)·심볼릭 링크 경로 탈출 방어.
