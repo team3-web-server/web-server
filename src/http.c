@@ -1,8 +1,12 @@
 #include "http.h"
 
-#include <stddef.h> /* size_t, NULL */
-#include <stdlib.h> /* malloc, free */
-#include <string.h> /* strstr, memchr, memcpy */
+#include <errno.h>     /* errno, EINTR */
+#include <stddef.h>    /* size_t, NULL */
+#include <stdio.h>     /* perror */
+#include <stdlib.h>    /* malloc, free */
+#include <string.h>    /* strstr, memchr, memcpy */
+#include <sys/types.h> /* ssize_t */
+#include <unistd.h>    /* read */
 
 /*
  * start부터 len바이트를 새로 할당한 메모리에 복사하고 끝에 '\0'을 붙여 그 주소를 돌려준다.
@@ -104,4 +108,44 @@ void free_request(struct http_request *req)
     req->method = NULL;
     req->target = NULL;
     req->version = NULL;
+}
+
+int read_request_head(int fd, char *buf, size_t size, size_t *len)
+{
+    if (buf == NULL || len == NULL || size < 2) {
+        return HEAD_ERROR;
+    }
+    size_t total = 0; /* 지금까지 받은 바이트 수 */
+    buf[0] = '\0';
+    *len = 0;
+
+    for (;;) {
+        /* 남은 자리: 전체 크기에서 이미 받은 만큼과 '\0' 자리 하나를 뺀다 */
+        size_t space = size - 1 - total;
+        if (space == 0) {
+            return HEAD_TOO_LARGE; /* 버퍼가 가득 찼는데 아직 "\r\n\r\n"을 못 찾았다 */
+        }
+
+        /* 이미 받은 바이트 바로 뒤(buf + total)부터 이어서 받는다 */
+        ssize_t n = read(fd, buf + total, space);
+        if (n == -1) {
+            if (errno == EINTR) {
+                continue; /* 시그널 때문에 중단됐을 뿐이다. 받은 것이 없으니 그대로 다시 read한다 */
+            }
+            perror("read");
+            return HEAD_ERROR;
+        }
+        if (n == 0) {
+            return HEAD_CLOSED; /* 클라이언트가 연결을 닫았다. 더 올 바이트가 없다 */
+        }
+
+        total += (size_t)n;
+        buf[total] = '\0'; /* read는 '\0'을 붙여 주지 않으므로 받을 때마다 끝에 직접 넣는다 */
+        *len = total;
+
+        /* 이번 조각이 아니라 buf 전체에서 찾는다. "\r\n\r\n"이 두 번의 read 사이에서 잘려 올 수 있기 때문이다 */
+        if (strstr(buf, "\r\n\r\n") != NULL) {
+            return HEAD_OK;
+        }
+    }
 }
