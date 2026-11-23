@@ -1,6 +1,7 @@
 #include "cgi.h"
 
 #include "http.h"
+#include "net.h"
 #include "response.h"
 
 #include <errno.h>     /* errno, EINTR */
@@ -137,7 +138,7 @@ int run_cgi(int conn_fd, const char *program_path, const char *method, const cha
     close(from_child[1]);
 
     /* 6) POST 본문을 자식의 표준 입력으로 보내고, 쓰는 쪽을 닫는다. 닫아야 자식의 read가 끝(EOF)을 알 수 있다 */
-    if (body_len > 0 && write(to_child[1], body, body_len) == -1) {
+    if (body_len > 0 && write_all(to_child[1], body, body_len) == -1) {
         perror("write (CGI 표준 입력)"); /* 자식이 본문을 읽지 않고 끝난 경우 등. 출력은 그대로 받아 본다 */
     }
     close(to_child[1]);
@@ -175,8 +176,12 @@ int run_cgi(int conn_fd, const char *program_path, const char *method, const cha
      * WIFEXITED: 스스로 끝났으면(return 또는 exit) 참.  WEXITSTATUS: 그때의 종료 값. 관례로 0이 성공이다.
      */
     int wstatus = 0;
-    if (waitpid(pid, &wstatus, 0) == -1) {
+    while (waitpid(pid, &wstatus, 0) == -1) {
+        if (errno == EINTR) {
+            continue; /* 기다리는 도중 시그널이 왔을 뿐이다. 다시 기다린다 */
+        }
         perror("waitpid");
+        break;
     }
     int exited_ok = WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0;
     printf("CGI 프로세스 %d 종료 (출력 %zu바이트, 정상 종료 %s)\n", (int)pid, out_len, exited_ok ? "예" : "아니오");
@@ -209,8 +214,8 @@ int run_cgi(int conn_fd, const char *program_path, const char *method, const cha
                             "Connection: close\r\n"
                             "\r\n",
                             content_type, res_body_len);
-    if (write(conn_fd, head, (size_t)head_len) == -1 ||
-        (res_body_len > 0 && write(conn_fd, out + body_offset, res_body_len) == -1)) {
+    if (write_all(conn_fd, head, (size_t)head_len) == -1 ||
+        write_all(conn_fd, out + body_offset, res_body_len) == -1) {
         perror("write");
     }
     free(out);

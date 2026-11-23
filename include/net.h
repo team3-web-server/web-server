@@ -1,6 +1,8 @@
 #ifndef NET_H
 #define NET_H
 
+#include <stddef.h> /* size_t */
+
 /*
  * IPv4 TCP 소켓을 하나 만든다.
  * 성공: 커널이 fd 테이블에서 비어 있는 가장 작은 번호를 골라 돌려준 fd (0 이상)
@@ -46,5 +48,15 @@ int listen_port(int fd, int backlog);
  * 듣기 소켓 fd는 그대로 남는다. 반환받은 새 fd는 호출한 쪽이 close()로 닫아야 한다.
  */
 int accept_client(int fd);
+
+/*
+ * buf의 len바이트를 fd에 "전부" 쓴다 (단계 10).
+ * 블로킹 소켓의 write는 보통 요청한 바이트를 모두 쓴 뒤 돌아오지만, 쓰는 도중 시그널 핸들러가 실행되면
+ * 일부만 쓰고 그 바이트 수를 돌려주거나, 하나도 못 쓰고 -1(errno는 EINTR)을 돌려줄 수 있다.
+ * 이 서버는 SIGINT, SIGTERM에 핸들러를 등록했으므로(main.c) 그런 일이 실제로 생길 수 있다.
+ * 그래서 남은 바이트가 0이 될 때까지 write를 반복한다.
+ * 반환값: 모두 썼으면 0. write가 EINTR이 아닌 이유로 실패하면 -1 (errno는 그대로 남는다. 출력은 호출한 쪽이 한다).
+ */
+int write_all(int fd, const char *buf, size_t len);
 
 #endif

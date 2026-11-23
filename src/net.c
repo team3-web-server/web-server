@@ -6,6 +6,8 @@
 #include <stdio.h>      /* perror, printf */
 #include <string.h>     /* memset */
 #include <sys/socket.h> /* socket, setsockopt, bind, listen, accept, AF_INET, SOCK_STREAM, socklen_t */
+#include <sys/types.h>  /* ssize_t */
+#include <unistd.h>     /* write */
 
 /* TCP 소켓을 하나 만들어서 그 fd 번호를 돌려주는 함수. 만들지 못하면 에러 원인을 출력하고 -1을 돌려준다. */
 int create_tcp_socket(void)
@@ -124,6 +126,13 @@ int accept_client(int fd)
      */
     int conn_fd = accept(fd, (struct sockaddr *)&client, &len);
     if (conn_fd == -1) {
+        /*
+         * EINTR: 기다리는 도중 시그널이 와서 accept가 중단됐다는 뜻이다. 고장이 아니므로 에러 문구를 출력하지 않는다.
+         * (Ctrl+C로 서버를 끝낼 때 생긴다. 호출한 쪽이 종료 요청이 있었는지 확인한다.)
+         */
+        if (errno == EINTR) {
+            return -1;
+        }
         int saved_errno = errno;
         perror("accept");
         errno = saved_errno;
@@ -141,4 +150,22 @@ int accept_client(int fd)
         printf("연결 수락: 클라이언트 %s:%d (conn fd = %d)\n", ip, ntohs(client.sin_port), conn_fd);
     }
     return conn_fd;
+}
+
+/* buf의 len바이트를 fd에 전부 쓰는 함수. 일부만 써졌으면 남은 부분을 이어서 쓴다. */
+int write_all(int fd, const char *buf, size_t len)
+{
+    size_t left = len; /* 아직 쓰지 못한 바이트 수 */
+    while (left > 0) {
+        /* 아직 쓰지 못한 부분의 시작 주소는 buf + (이미 쓴 바이트 수) */
+        ssize_t n = write(fd, buf + (len - left), left);
+        if (n == -1) {
+            if (errno == EINTR) {
+                continue; /* 시그널 때문에 중단됐을 뿐이다. 쓴 것이 없으니 그대로 다시 쓴다 */
+            }
+            return -1;
+        }
+        left -= (size_t)n; /* n바이트를 썼다. 남은 양을 줄이고, 0이 아니면 반복해서 이어 쓴다 */
+    }
+    return 0;
 }

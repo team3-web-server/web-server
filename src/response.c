@@ -1,5 +1,7 @@
 #include "response.h"
 
+#include "net.h"
+
 #include <errno.h>     /* errno, ENOENT, ENOTDIR, EACCES */
 #include <fcntl.h>     /* open, O_RDONLY */
 #include <stdio.h>     /* snprintf, perror */
@@ -7,7 +9,7 @@
 #include <strings.h>   /* strcasecmp */
 #include <sys/stat.h>  /* fstat, struct stat, S_ISREG */
 #include <sys/types.h> /* ssize_t */
-#include <unistd.h>    /* read, write, close */
+#include <unistd.h>    /* read, close */
 
 #define FILE_BUF_SIZE 8192 /* 파일 내용을 한 번에 읽어 보내는 버퍼 크기(바이트) */
 
@@ -82,7 +84,7 @@ int send_error(int fd, int code)
         allow = "Allow: GET\r\n";
     }
 
-    /* 상태 줄 + 헤더 + 빈 줄 + 본문을 한 버퍼에 만들어 write 한 번으로 보낸다 */
+    /* 상태 줄 + 헤더 + 빈 줄 + 본문을 한 버퍼에 만들어 write_all로 보낸다 */
     char res[512];
     int res_len = snprintf(res, sizeof(res),
                            "HTTP/1.1 %d %s\r\n"
@@ -93,7 +95,7 @@ int send_error(int fd, int code)
                            "\r\n"
                            "%s",
                            code, status_text(code), body_len, allow, body);
-    if (write(fd, res, (size_t)res_len) == -1) {
+    if (write_all(fd, res, (size_t)res_len) == -1) {
         perror("write");
     }
     return code;
@@ -146,7 +148,7 @@ int send_file(int fd, const char *path)
                             "Connection: close\r\n"
                             "\r\n",
                             mime_type(path), (long long)st.st_size);
-    if (write(fd, head, (size_t)head_len) == -1) {
+    if (write_all(fd, head, (size_t)head_len) == -1) {
         perror("write");
         close(file_fd);
         return 200;
@@ -155,7 +157,7 @@ int send_file(int fd, const char *path)
     /*
      * 4) 파일 내용을 보낸다. 파일 전체를 메모리에 올리지 않고 8192바이트씩 읽어서 바로 보낸다.
      * 파일 내용은 문자열이 아니라 바이트다 (이미지에는 값이 0인 바이트도 있다).
-     * 그래서 strlen을 쓰지 않고 read가 돌려준 바이트 수 n만큼만 write한다.
+     * 그래서 strlen을 쓰지 않고 read가 돌려준 바이트 수 n만큼만 write_all로 쓴다.
      * read가 0을 돌려주면 파일 끝이다.
      */
     char buf[FILE_BUF_SIZE];
@@ -169,7 +171,7 @@ int send_file(int fd, const char *path)
             perror("read");
             break;
         }
-        if (write(fd, buf, (size_t)n) == -1) {
+        if (write_all(fd, buf, (size_t)n) == -1) {
             perror("write");
             break;
         }
