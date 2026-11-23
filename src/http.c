@@ -2,9 +2,9 @@
 
 #include <errno.h>     /* errno, EINTR */
 #include <stddef.h>    /* size_t, NULL */
-#include <stdio.h>     /* perror */
+#include <stdio.h>     /* perror, snprintf */
 #include <stdlib.h>    /* malloc, free */
-#include <string.h>    /* strstr, memchr, memcpy */
+#include <string.h>    /* strstr, memchr, memcpy, strlen */
 #include <sys/types.h> /* ssize_t */
 #include <unistd.h>    /* read */
 
@@ -148,4 +148,29 @@ int read_request_head(int fd, char *buf, size_t size, size_t *len)
             return HEAD_OK;
         }
     }
+}
+
+/* target이 '/'로 끝날 때 덧붙이는 파일 이름 */
+#define INDEX_NAME "index.html"
+
+/* 요청 대상을 파일 경로로 바꾼다. root와 target을 이어 붙이고, target이 '/'로 끝나면 INDEX_NAME을 덧붙인다. */
+int build_file_path(const char *root, const char *target, char *path, size_t size)
+{
+    /* target의 마지막 글자가 '/'인지 본다. target이 빈 문자열이면 마지막 글자가 없으므로 보지 않는다 */
+    const char *index = "";
+    size_t target_len = strlen(target);
+    if (target_len > 0 && target[target_len - 1] == '/') {
+        index = INDEX_NAME;
+    }
+
+    /*
+     * snprintf(버퍼, 크기, 형식, ...)는 printf처럼 글자를 만들되 화면이 아니라 버퍼에 쓴다.
+     * 크기를 넘는 부분은 쓰지 않고 잘라 내며(끝에는 항상 '\0'), 잘리지 않았다면 썼을 글자 수를 돌려준다.
+     * 그래서 반환값이 size 이상이면 결과가 잘렸다는 뜻이다.
+     */
+    int n = snprintf(path, size, "%s%s%s", root, target, index);
+    if (n >= (int)size) {
+        return -1;
+    }
+    return 0;
 }

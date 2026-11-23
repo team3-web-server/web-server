@@ -258,6 +258,32 @@ static void test_head_bad_args(void)
     CHECK(read_request_head(-1, buf, 1, &len) == HEAD_ERROR, "size가 1이면 HEAD_ERROR ('\\0' 말고는 받을 자리가 없음)");
 }
 
+/* build_file_path: 요청 대상을 파일 경로로 바꾼다 */
+static void test_build_file_path(void)
+{
+    char path[64];
+
+    CHECK(build_file_path("./www", "/img/red.png", path, sizeof(path)) == 0 && strcmp(path, "./www/img/red.png") == 0,
+          "\"/img/red.png\"는 \"./www/img/red.png\"가 됨");
+    CHECK(build_file_path("./www", "/", path, sizeof(path)) == 0 && strcmp(path, "./www/index.html") == 0,
+          "\"/\"는 '/'로 끝나므로 \"./www/index.html\"이 됨");
+    CHECK(build_file_path("./www", "/img/", path, sizeof(path)) == 0 && strcmp(path, "./www/img/index.html") == 0,
+          "\"/img/\"도 '/'로 끝나므로 \"./www/img/index.html\"이 됨");
+    CHECK(build_file_path("./www", "/index.html", path, sizeof(path)) == 0 && strcmp(path, "./www/index.html") == 0,
+          "\"/index.html\"은 '/'로 끝나지 않으므로 아무것도 덧붙이지 않음");
+    CHECK(build_file_path("./www", "", path, sizeof(path)) == 0 && strcmp(path, "./www") == 0,
+          "요청 대상이 빈 문자열이면 root만 남음 (마지막 글자를 보지 않음)");
+
+    /* "./www/abc"는 9글자다. '\0'까지 10바이트가 필요하다 */
+    char small[10];
+    CHECK(build_file_path("./www", "/abc", small, sizeof(small)) == 0 && strcmp(small, "./www/abc") == 0,
+          "결과가 버퍼 크기 - 1글자에 꼭 맞으면 0을 반환");
+    char smaller[9];
+    CHECK(build_file_path("./www", "/abc", smaller, sizeof(smaller)) == -1, "결과가 버퍼보다 1글자 길면 -1을 반환");
+    CHECK(build_file_path("./www", "/", smaller, sizeof(smaller)) == -1,
+          "index.html을 덧붙인 결과가 버퍼보다 길어도 -1을 반환");
+}
+
 int main(void)
 {
     test_curl_request();
@@ -271,6 +297,7 @@ int main(void)
     test_head_closed();
     test_head_too_large();
     test_head_bad_args();
+    test_build_file_path();
 
     if (failures > 0) {
         printf("단위 테스트 실패: %d개\n", failures);

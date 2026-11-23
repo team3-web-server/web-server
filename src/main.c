@@ -4,7 +4,8 @@
  *         → [연결 하나를 accept → 헤더의 끝(빈 줄)까지 read를 반복해 요청을 받고 → 요청 줄을 세 칸으로 나눠 출력
  *         → 고정 응답(200 OK, <h1>Hello</h1>)을 보내고 → 연결을 닫는다]를 끝없이 반복한다.
  *         헤더가 버퍼보다 길면 431 에러 응답을 보낸다. 한 번에 연결 하나만 처리한다.
- * 요청 내용에 따라 응답을 바꾸는 것은 아직 없다.
+ * 단계 4 조각 2: 요청 대상을 "./www" 아래의 파일 경로로 바꿔 출력한다. 파일을 열어 보내는 것은 아직 없다.
+ *         경로가 버퍼보다 길면 414 에러 응답을 보낸다.
  */
 #include "http.h"
 #include "net.h"
@@ -17,6 +18,8 @@
 #define PORT 8080
 #define BACKLOG SOMAXCONN /* 연결 대기열 최대 길이. SOMAXCONN은 <sys/socket.h>에 정의된 시스템 상한 값 */
 #define REQ_BUF_SIZE 8192 /* 요청 헤더를 받는 버퍼 크기(바이트). 마지막 한 바이트는 '\0' 자리로 남긴다 */
+#define DOC_ROOT "./www"  /* 정적 파일을 두는 폴더. 요청 대상을 이 폴더 아래의 파일 경로로 바꾼다 */
+#define PATH_BUF_SIZE 4096 /* 파일 경로를 담는 버퍼 크기(바이트). 리눅스가 받아 주는 경로 최대 길이(PATH_MAX)와 같다 */
 
 /*
  * 고정 응답 (HTTP 응답 메시지 = 상태 줄 + 헤더 줄들 + 빈 줄 + 본문).
@@ -47,6 +50,19 @@
     "Connection: close\r\n"                            \
     "\r\n"                                             \
     "<h1>431 Request Header Fields Too Large</h1>\n"
+
+/*
+ * 요청 대상으로 만든 파일 경로가 버퍼(PATH_BUF_SIZE)보다 길 때 보내는 에러 응답.
+ * 414 URI Too Long: 요청 대상이 서버가 처리하려는 길이보다 길다는 상태 코드 (RFC 9110 15.5.15절).
+ * 본문 "<h1>414 URI Too Long</h1>\n"은 26바이트
+ */
+#define RESPONSE_414                \
+    "HTTP/1.1 414 URI Too Long\r\n" \
+    "Content-Type: text/html\r\n"   \
+    "Content-Length: 26\r\n"        \
+    "Connection: close\r\n"         \
+    "\r\n"                          \
+    "<h1>414 URI Too Long</h1>\n"
 
 int main(void)
 {
@@ -130,6 +146,13 @@ int main(void)
             printf("431 응답을 보냈습니다 (%zd바이트)\n", sent);
         } else {
             /*
+             * 보낼 응답. 처음에는 고정 응답(200)으로 정해 두고, 아래에서 경로가 너무 길면 414로 바꾼다.
+             * sizeof(RESPONSE)는 끝의 '\0'까지 센 크기라서 1을 뺀다. '\0'은 HTTP 메시지의 일부가 아니다.
+             */
+            const char *res = RESPONSE;
+            size_t res_len = sizeof(RESPONSE) - 1;
+
+            /*
              * 요청 줄을 메서드, 요청 대상, 버전 세 칸으로 나눠 출력한다 (단계 2의 파서).
              * 성공하면 세 칸은 malloc으로 할당된 메모리에 들어 있으므로, 다 쓴 뒤 free_request로 해제한다.
              */
@@ -138,17 +161,30 @@ int main(void)
                 printf("메서드: %s\n", req.method);
                 printf("요청 대상: %s\n", req.target);
                 printf("HTTP 버전: %s\n", req.version);
+
+                /*
+                 * 요청 대상을 파일 경로로 바꾼다. 예) "/img/red.png" → "./www/img/red.png", "/" → "./www/index.html"
+                 * 아직 파일을 열지는 않고, 만든 경로를 출력만 한다.
+                 * req.target은 free_request가 해제하는 메모리에 있으므로, 반드시 free_request보다 먼저 써야 한다.
+                 */
+                char path[PATH_BUF_SIZE];
+                if (build_file_path(DOC_ROOT, req.target, path, sizeof(path)) == 0) {
+                    printf("파일 경로: %s\n", path);
+                } else {
+                    printf("파일 경로가 너무 깁니다 (버퍼 %d바이트)\n", PATH_BUF_SIZE);
+                    res = RESPONSE_414;
+                    res_len = sizeof(RESPONSE_414) - 1;
+                }
                 free_request(&req);
             } else {
                 printf("요청 줄 형식이 맞지 않습니다\n");
             }
 
             /*
-             * 고정 응답을 보낸다. 지금은 요청 내용과 상관없이 항상 같은 응답이다.
-             * sizeof(RESPONSE)는 끝의 '\0'까지 센 크기라서 1을 뺀다. '\0'은 HTTP 메시지의 일부가 아니다.
+             * 응답을 보낸다. 경로가 너무 긴 경우(414)가 아니면 요청 내용과 상관없이 같은 고정 응답이다.
              * write(fd, 시작 주소, 바이트 수)는 프로세스의 바이트를 커널의 송신 버퍼로 복사하고, 복사한 바이트 수를 돌려준다.
              */
-            ssize_t sent = write(conn_fd, RESPONSE, sizeof(RESPONSE) - 1);
+            ssize_t sent = write(conn_fd, res, res_len);
             if (sent == -1) {
                 perror("write");
                 close(conn_fd);

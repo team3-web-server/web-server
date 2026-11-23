@@ -5,6 +5,7 @@
  * HTTP 요청을 읽고 해석하는 함수 모음.
  * 단계 2: 요청의 첫 줄(요청 줄)을 세 칸으로 나누는 함수.
  * 단계 3: 연결 소켓에서 헤더의 끝(빈 줄, "\r\n\r\n")까지 읽는 함수.
+ * 단계 4: 요청 대상을 파일 경로로 바꾸는 함수.
  */
 
 #include <stddef.h> /* size_t */
@@ -61,5 +62,16 @@ void free_request(struct http_request *req);
  * read가 시그널 때문에 중단되면(errno == EINTR) 에러로 보지 않고 다시 read한다.
  */
 int read_request_head(int fd, char *buf, size_t size, size_t *len);
+
+/*
+ * 요청 대상(target)을 정적 파일 폴더(root) 아래의 파일 경로로 바꿔 path에 쓴다.
+ *   path = root + target              예) "./www" + "/img/red.png" → "./www/img/red.png"
+ *   target이 '/'로 끝나면 폴더를 가리키는 것으로 보고 "index.html"을 덧붙인다.
+ *                                     예) "./www" + "/" → "./www/index.html"
+ * 파일이 실제로 있는지는 확인하지 않는다. 문자열만 만든다.
+ * path: 결과를 담을 버퍼. size: path의 크기(바이트, 끝의 '\0' 포함).
+ * 반환값: 성공하면 0. 결과가 path에 다 들어가지 않으면(잘리면) -1. 이때 path의 내용은 쓰면 안 된다.
+ */
+int build_file_path(const char *root, const char *target, char *path, size_t size);
 
 #endif /* HTTP_H */
