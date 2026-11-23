@@ -103,7 +103,7 @@ flowchart TD
 - **검색 범위**: 이번에 받은 조각이 아니라 `buf` 전체에서 찾는다. `\r\n\r\n` 4바이트가 두 번의 `read` 사이에서 잘려 올 수 있기 때문이다. 예를 들어 앞 조각이 `...\r\n\r`로 끝나고 뒤 조각이 `\n`이면, 어느 조각에도 `\r\n\r\n`은 없다.
 - **`'\0'`**: `strstr`은 `'\0'`을 만날 때까지 읽으므로, 받을 때마다 `buf[total] = '\0'`을 넣는다.
 
-### 반환값 네 가지와 `main.c`의 처리 (`src/main.c` 98~143줄)
+### 반환값 네 가지와 `main.c`의 처리 (`src/main.c` 98~148줄)
 
 | 반환값 | 뜻 | `main.c`가 하는 일 |
 |---|---|---|
@@ -150,6 +150,58 @@ A server that does not support persistent connections MUST send the "close" conn
 ### `write`를 한 번만 부르는 이유 (`src/main.c`)
 
 `write(fd, 시작 주소, 바이트 수)`는 프로세스의 바이트를 커널의 송신 버퍼로 복사하고, 복사한 바이트 수를 돌려준다. 지금 웹 서버 프로세스의 연결 소켓은 블로킹 소켓이라서, 송신 버퍼에 자리가 모자라면 `write`는 자리가 날 때까지 기다렸다가 전부 쓴 뒤에 돌아온다. 컨테이너(리눅스 6.18)에서 블로킹 TCP 소켓에 4MB를 `write` 한 번으로 썼을 때 4,194,304바이트가 전부 쓰였다. 그래서 98바이트 응답은 `write` 한 번으로 보낸다. `write`가 -1을 돌려주면 `perror`로 원인을 출력하고 프로세스를 끝낸다.
+
+### 학습 그림 (헤더 끝까지 읽기와 HTTP 응답)
+
+학습 페이지의 17개 그림 중 이번 단계 코드와 이어지는 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 13, 15번이다. 번호는 학습 페이지의 번호 그대로다. 1~6번과 8번은 `src/http.c`의 `read_request_head`, 9~15번은 `src/main.c`의 고정 응답 `RESPONSE`와 이어진다. 3번과 5번 그림의 50바이트 요청은 학습 때 `localhost:5601`로 잰 것이고, 9번 그림의 201바이트 응답은 이 프로젝트의 웹 서버가 아니라 파이썬 `http.server`의 응답이다.
+
+**1. 세 주체: 클라이언트 프로세스, 커널, 웹 서버 프로세스**
+
+![세 주체: 클라이언트 프로세스, 커널, 웹 서버 프로세스](images/step3-01-three-actors.png)
+
+**2. read와 write는 커널 버퍼와 프로세스 메모리 사이의 복사**
+
+![read와 write는 커널 버퍼와 프로세스 메모리 사이의 복사](images/step3-02-read-write-copy.png)
+
+**3. 한 번 보낸 요청이 read 여러 번으로 나뉜다**
+
+![한 번 보낸 요청이 read 여러 번으로 나뉜다](images/step3-03-split-reads.png)
+
+**4. 여러 번 보낸 바이트가 read 한 번으로 합쳐진다**
+
+![여러 번 보낸 바이트가 read 한 번으로 합쳐진다](images/step3-04-merged-read.png)
+
+**5. 누적 버퍼: 앞에 받은 바이트 바로 뒤에 이어 받기**
+
+![누적 버퍼: 앞에 받은 바이트 바로 뒤에 이어 받기](images/step3-05-accumulate-buffer.png)
+
+**6. 헤더 끝까지 읽는 반복**
+
+![헤더 끝까지 읽는 반복](images/step3-06-read-loop.png)
+
+**8. 두 방식의 차이: 한꺼번에 들고 있나, 줄 하나만 들고 있나**
+
+![두 방식의 차이: 한꺼번에 들고 있나, 줄 하나만 들고 있나](images/step3-08-two-approaches.png)
+
+**9. 응답 메시지도 네 칸**
+
+![응답 메시지도 네 칸](images/step3-09-response-structure.png)
+
+**10. 상태 줄: 판단은 세 자리 숫자로**
+
+![상태 줄: 판단은 세 자리 숫자로](images/step3-10-status-line.png)
+
+**12. Content-Type: 본문 바이트를 어떻게 해석할지**
+
+![Content-Type: 본문 바이트를 어떻게 해석할지](images/step3-12-content-type.png)
+
+**13. 본문의 끝: Content-Length 또는 연결 닫기**
+
+![본문의 끝: Content-Length 또는 연결 닫기](images/step3-13-body-end.png)
+
+**15. Connection: close는 웹 서버가 클라이언트에게 알리는 헤더**
+
+![Connection: close는 웹 서버가 클라이언트에게 알리는 헤더](images/step3-15-connection-close.png)
 
 ## 결정사항과 이유
 
