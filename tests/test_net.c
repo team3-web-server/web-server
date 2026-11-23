@@ -5,11 +5,12 @@
 #include "net.h"
 
 #include <arpa/inet.h>  /* htonl, htons */
-#include <errno.h>      /* errno, EADDRINUSE */
+#include <errno.h>      /* errno, EADDRINUSE, EBADF */
 #include <netinet/in.h> /* struct sockaddr_in, INADDR_LOOPBACK */
 #include <stdio.h>
-#include <string.h>     /* memset */
-#include <sys/socket.h> /* connect, getsockopt, SOMAXCONN */
+#include <string.h>     /* memset, memcmp */
+#include <sys/socket.h> /* connect, getsockopt, socketpair, AF_UNIX, SOMAXCONN */
+#include <sys/types.h>  /* ssize_t */
 #include <unistd.h>     /* close, read */
 
 /* 테스트용 포트. 서버 기본 포트(8080)가 다른 프로그램에 잡혀 있어도 테스트가 깨지지 않게 따로 둔다 */
@@ -141,6 +142,29 @@ static void test_accept_client(void)
     CHECK(close(listen_fd) == 0, "연결 소켓을 닫은 뒤에도 듣기 소켓은 열려 있어 close()가 0을 반환");
 }
 
+/* write_all: 요청한 바이트를 전부 쓴다 */
+static void test_write_all(void)
+{
+    int sv[2];
+    /* socketpair는 서로 연결된 소켓 두 개를 만든다. sv[0]에 쓴 바이트를 sv[1]에서 읽을 수 있다 */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1) {
+        perror("socketpair");
+        failures++;
+        return;
+    }
+    char buf[16];
+    memset(buf, 0, sizeof(buf));
+    CHECK(write_all(sv[0], "hello world", 11) == 0, "write_all이 11바이트를 쓰고 0을 반환");
+    ssize_t n = read(sv[1], buf, sizeof(buf));
+    CHECK(n == 11 && memcmp(buf, "hello world", 11) == 0, "반대쪽에서 같은 11바이트를 읽음");
+    CHECK(write_all(sv[0], "", 0) == 0, "0바이트를 쓰라고 하면 아무것도 하지 않고 0을 반환");
+    close(sv[0]);
+    close(sv[1]);
+
+    errno = 0;
+    CHECK(write_all(-1, "x", 1) == -1 && errno == EBADF, "잘못된 fd에 쓰면 -1을 반환하고 errno는 EBADF");
+}
+
 int main(void)
 {
     test_create_tcp_socket();
@@ -149,5 +173,6 @@ int main(void)
     test_set_reuseaddr();
     test_listen_port();
     test_accept_client();
+    test_write_all();
     return failures == 0 ? 0 : 1;
 }
