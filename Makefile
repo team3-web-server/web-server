@@ -1,7 +1,7 @@
 # =====================================================================
 # 웹 서버 빌드 규칙
 #   make        : build/server 빌드 (-Wall -Wextra 경고 확인)
-#   make test   : 서버와 단위 테스트(build/test_net, build/test_http)를 빌드한 뒤 tests/run_tests.sh 실행
+#   make test   : 서버와 단위 테스트(build/test_net, build/test_http, build/test_response)를 빌드한 뒤 tests/run_tests.sh 실행
 #   make asan   : -fsanitize=address,leak 로 같은 테스트를 빌드·실행
 #   make demo   : demo/ 의 시연용 프로그램 빌드 (build/listen_demo, build/connect_demo)
 #   make clean  : build/ 삭제
@@ -20,8 +20,8 @@ BUILD   := build
 BIN     := $(BUILD)/server
 ASANBIN := $(BUILD)/server-asan
 # 단위 테스트 실행 파일: tests/test_net.c → build/test_net, tests/test_http.c → build/test_http
-TESTBINS := $(BUILD)/test_net $(BUILD)/test_http
-ASANTESTBINS := $(BUILD)/test_net-asan $(BUILD)/test_http-asan
+TESTBINS := $(BUILD)/test_net $(BUILD)/test_http $(BUILD)/test_response
+ASANTESTBINS := $(BUILD)/test_net-asan $(BUILD)/test_http-asan $(BUILD)/test_response-asan
 
 .PHONY: all test asan demo clean
 

@@ -284,6 +284,42 @@ static void test_build_file_path(void)
           "index.html을 덧붙인 결과가 버퍼보다 길어도 -1을 반환");
 }
 
+/* split_target: 요청 대상을 경로와 쿼리 문자열로 나눈다 */
+static void test_split_target(void)
+{
+    char path[32];
+    const char *query = NULL;
+
+    CHECK(split_target("/search.html?q=abc", path, sizeof(path), &query) == 0 && strcmp(path, "/search.html") == 0 &&
+              strcmp(query, "q=abc") == 0,
+          "\"/search.html?q=abc\"는 경로 \"/search.html\", 쿼리 \"q=abc\"");
+    CHECK(split_target("/index.html", path, sizeof(path), &query) == 0 && strcmp(path, "/index.html") == 0 &&
+              strcmp(query, "") == 0,
+          "'?'가 없으면 쿼리는 빈 문자열");
+    CHECK(split_target("/a?", path, sizeof(path), &query) == 0 && strcmp(path, "/a") == 0 && strcmp(query, "") == 0,
+          "'?'로 끝나면 쿼리는 빈 문자열");
+    CHECK(split_target("/a?x=1?y=2", path, sizeof(path), &query) == 0 && strcmp(query, "x=1?y=2") == 0,
+          "첫 번째 '?'에서만 나눔");
+    char small[4];
+    CHECK(split_target("/abc?x=1", small, sizeof(small), &query) == -1, "경로가 버퍼에 들어가지 않으면 -1");
+    CHECK(split_target("/ab?x=1", small, sizeof(small), &query) == 0 && strcmp(small, "/ab") == 0,
+          "경로가 버퍼에 꼭 맞으면 0");
+}
+
+/* path_has_dotdot: 경로에 ".." 칸이 있는지 본다 */
+static void test_path_has_dotdot(void)
+{
+    CHECK(path_has_dotdot("/../Makefile") == 1, "\"/../Makefile\"에는 .. 칸이 있음");
+    CHECK(path_has_dotdot("/a/../b") == 1, "경로 중간의 .. 칸");
+    CHECK(path_has_dotdot("/a/..") == 1, "경로 끝의 .. 칸");
+    CHECK(path_has_dotdot("..") == 1, "\"..\"만 있는 경우");
+    CHECK(path_has_dotdot("/index.html") == 0, "평범한 경로에는 없음");
+    CHECK(path_has_dotdot("/a..b/c") == 0, "칸의 일부가 ..인 것은 해당하지 않음");
+    CHECK(path_has_dotdot("/.../x") == 0, "점 세 개는 해당하지 않음");
+    CHECK(path_has_dotdot("/./x") == 0, "점 한 개는 해당하지 않음");
+    CHECK(path_has_dotdot("/") == 0 && path_has_dotdot("") == 0, "\"/\"와 빈 문자열에는 없음");
+}
+
 int main(void)
 {
     test_curl_request();
@@ -298,6 +334,8 @@ int main(void)
     test_head_too_large();
     test_head_bad_args();
     test_build_file_path();
+    test_split_target();
+    test_path_has_dotdot();
 
     if (failures > 0) {
         printf("단위 테스트 실패: %d개\n", failures);
