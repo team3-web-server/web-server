@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Server Lab</title>
+<link rel="stylesheet" href="lab.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>Web Server Lab</h1>
+    <p class="lead">버튼을 누르면 클라이언트 프로세스가 프록시에 실제 요청을 보낸다. 그림은 프록시가 출력한 로그를 읽어서 그린다.</p>
+  </div>
+  <div id="link-state" class="link-state" aria-live="polite">연결 확인 중</div>
+</header>
+
+<nav class="tabs" id="tabs" role="tablist" aria-label="장면"></nav>
+
+<main>
+  <section class="card scene" aria-live="polite">
+    <div class="scene-text">
+      <h2 id="scene-title"></h2>
+      <p id="scene-desc"></p>
+    </div>
+    <div class="controls" id="controls"></div>
+    <pre class="conf" id="conf" hidden></pre>
+  </section>
+
+  <section class="card diagram" aria-label="요청이 지나가는 길">
+    <svg id="stage" viewBox="0 20 900 270" role="img" aria-label="클라이언트, 프록시, 백엔드 사이의 흐름">
+      <g class="edges">
+        <line id="edge-client" x1="190" y1="190" x2="350" y2="190"/>
+        <line id="edge-8001" x1="520" y1="190" x2="690" y2="70"/>
+        <line id="edge-8003" x1="520" y1="190" x2="690" y2="150"/>
+        <line id="edge-8002" x1="520" y1="190" x2="690" y2="250"/>
+        <line id="edge-ext" x1="520" y1="190" x2="690" y2="345" class="hidden"/>
+      </g>
+      <text class="route" x="600" y="92">/api/</text>
+      <text class="route" x="628" y="208">/static/</text>
+
+      <g class="node" id="node-client">
+        <rect x="30" y="150" width="160" height="80" rx="12"/>
+        <text class="name" x="110" y="184">클라이언트</text>
+        <text class="sub" x="110" y="208">CGI 프로세스 lab</text>
+      </g>
+      <text id="client-chip" class="chip" x="110" y="262"></text>
+
+      <g class="node" id="node-proxy">
+        <rect x="350" y="140" width="170" height="100" rx="12"/>
+        <circle class="lamp" cx="368" cy="158" r="6"/>
+        <text class="name" x="435" y="184">프록시</text>
+        <text class="sub" x="435" y="208">포트 8080</text>
+      </g>
+      <text id="proxy-note" class="chip" x="435" y="272"></text>
+
+      <g class="node backend" id="node-8001">
+        <rect x="690" y="40" width="180" height="60" rx="12"/>
+        <circle class="lamp" cx="708" cy="58" r="6"/>
+        <text class="name" x="780" y="66">백엔드 8001</text>
+        <text class="sub" id="cnt-8001" x="780" y="88">요청 0</text>
+      </g>
+      <g class="node backend" id="node-8003">
+        <rect x="690" y="120" width="180" height="60" rx="12"/>
+        <circle class="lamp" cx="708" cy="138" r="6"/>
+        <text class="name" x="780" y="146">백엔드 8003</text>
+        <text class="sub" id="cnt-8003" x="780" y="168">요청 0</text>
+      </g>
+      <g class="node backend" id="node-8002">
+        <rect x="690" y="220" width="180" height="60" rx="12"/>
+        <circle class="lamp" cx="708" cy="238" r="6"/>
+        <text class="name" x="780" y="246">백엔드 8002</text>
+        <text class="sub" id="cnt-8002" x="780" y="268">요청 0</text>
+      </g>
+      <g class="node ext hidden" id="node-ext">
+        <rect x="690" y="315" width="180" height="60" rx="12"/>
+        <text class="name" x="780" y="341">다른 서버</text>
+        <text class="sub" id="ext-name" x="780" y="363"></text>
+      </g>
+
+      <circle id="dot" class="dot hidden" r="9" cx="110" cy="190"/>
+    </svg>
+    <p class="legend">
+      <span class="key req"></span>요청
+      <span class="key res"></span>응답
+      <span class="key err"></span>오류 응답
+      <span class="key up"></span>켜짐
+      <span class="key down"></span>꺼짐
+    </p>
+  </section>
+
+  <section class="panels">
+    <div class="card panel">
+      <h3>클라이언트가 보낸 요청</h3>
+      <pre id="sent" class="mono empty">아직 보낸 요청이 없다</pre>
+    </div>
+    <div class="card panel">
+      <h3>클라이언트가 받은 응답 <span id="res-meta" class="meta"></span></h3>
+      <pre id="received" class="mono empty">아직 받은 응답이 없다</pre>
+    </div>
+    <div class="card panel log">
+      <h3>프록시 로그 <span class="meta">프록시 프로세스가 출력한 그대로</span></h3>
+      <pre id="log" class="mono"></pre>
+    </div>
+  </section>
+</main>
+
+<script src="lab.js"></script>
+</body>
+</html>

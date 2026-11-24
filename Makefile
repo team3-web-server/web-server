@@ -5,6 +5,7 @@
 #                 이어서 프록시 테스트(build/test_proxy, tests/run_proxy_tests.sh) 실행
 #   make asan   : -fsanitize=address,leak 로 같은 테스트를 빌드·실행
 #   make demo   : demo/ 의 시연용 프로그램 빌드 (build/listen_demo, build/connect_demo)
+#   make lab    : 데모 페이지(demo/lab)의 CGI 프로그램 빌드. 실행은 bash demo/lab/run.sh
 #   make clean  : build/ 와 www/cgi-bin/ 삭제
 # =====================================================================
 
@@ -31,7 +32,7 @@ PROXYSRCS := $(wildcard proxy/*.c)
 PROXYLIB  := proxy/proxy.c
 PROXYBIN  := $(BUILD)/proxy
 
-.PHONY: all test asan demo clean
+.PHONY: all test asan demo lab clean
 
 all: $(BIN) $(PROXYBIN) $(CGIBINS)
 
@@ -88,5 +89,14 @@ $(BUILD)/listen_demo: demo/listen_demo.c | $(BUILD)
 $(BUILD)/connect_demo: demo/connect_demo.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
+# 데모 페이지(Web Server Lab): 버튼이 부르는 CGI 프로그램을 페이지 폴더의 cgi-bin 아래에 빌드한다
+LABCGI := demo/lab/www/cgi-bin/lab
+
+lab: all $(LABCGI)
+
+$(LABCGI): demo/lab/cgi/lab.c
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $< -o $@
+
 clean:
-	rm -rf $(BUILD) $(CGIDIR)
+	rm -rf $(BUILD) $(CGIDIR) demo/lab/www/cgi-bin demo/lab/run

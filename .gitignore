@@ -2,3 +2,6 @@
 build/
 # CGI 예제 프로그램의 실행 파일도 빌드 결과물이다 (소스는 cgi/)
 www/cgi-bin/
+# 데모 페이지의 CGI 실행 파일과 실행 중에 생기는 로그, 프로세스 번호 파일
+demo/lab/www/cgi-bin/
+demo/lab/run/
