@@ -1,12 +1,15 @@
+/* getaddrinfo를 쓰려면 헤더보다 먼저 있어야 한다 (-std=c11) */
+#define _POSIX_C_SOURCE 200809L
+
 #include "proxy.h"
 
 #include "http.h"
 #include "net.h"
 #include "response.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
+#include <netdb.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -17,6 +20,8 @@
 #define PATH_BUF_SIZE 4096 /* 경로 버퍼 크기 */
 #define RELAY_BUF_SIZE 8192 /* 한 번에 읽어 전달하는 크기 */
 #define HEADER_VALUE_SIZE 64
+#define FIRST_LINE_SIZE 4200 /* 백엔드에 보낼 요청 줄을 만드는 버퍼 크기 */
+#define ABSOLUTE_PREFIX "http://"
 
 int load_config(const char *path, struct proxy_config *cfg)
 {
@@ -91,28 +96,77 @@ const struct backend *pick_backend(struct route *route)
     return backend;
 }
 
+int parse_absolute_url(const char *target, struct backend *dest, const char **path)
+{
+    size_t prefix_len = sizeof(ABSOLUTE_PREFIX) - 1;
+    if (strncmp(target, ABSOLUTE_PREFIX, prefix_len) != 0) {
+        return -1;
+    }
+    const char *host = target + prefix_len;
+
+    /* 주소는 ':' 또는 '/' 앞까지다 */
+    size_t host_len = strcspn(host, ":/");
+    if (host_len == 0 || host_len >= HOST_SIZE) {
+        return -1;
+    }
+    memcpy(dest->host, host, host_len);
+    dest->host[host_len] = '\0';
+
+    /* ':'가 있으면 그 뒤가 포트다. 없으면 HTTP의 기본 포트 80 */
+    const char *rest = host + host_len;
+    dest->port = 80;
+    if (*rest == ':') {
+        char *end;
+        long port = strtol(rest + 1, &end, 10);
+        if (end == rest + 1 || port < 1 || port > 65535) {
+            return -1;
+        }
+        dest->port = (int)port;
+        rest = end;
+    }
+
+    if (*rest == '/') {
+        *path = rest;
+    } else if (*rest == '\0') {
+        *path = "/";
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
 int connect_backend(const struct backend *backend)
 {
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)backend->port);
-    /* inet_pton: "127.0.0.1" 같은 문자열을 네트워크 바이트 순서의 주소 숫자로 바꾼다. 형식이 틀리면 0 */
-    if (inet_pton(AF_INET, backend->host, &addr.sin_addr) != 1) {
-        fprintf(stderr, "백엔드 주소가 IPv4 형식이 아닙니다: %s\n", backend->host);
+    /*
+     * getaddrinfo: 주소 문자열("127.0.0.1" 또는 "example.com")과 포트를 connect에 넘길 수 있는 주소 구조체로 바꾼다.
+     * 이름이면 DNS에 물어 IP 주소를 알아낸다. 결과는 목록으로 오고, 다 쓰면 freeaddrinfo로 해제한다.
+     */
+    char port_text[8];
+    snprintf(port_text, sizeof(port_text), "%d", backend->port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;       /* IPv4 */
+    hints.ai_socktype = SOCK_STREAM; /* TCP */
+    struct addrinfo *result;
+    int err = getaddrinfo(backend->host, port_text, &hints, &result);
+    if (err != 0) {
+        fprintf(stderr, "getaddrinfo(%s): %s\n", backend->host, gai_strerror(err));
         return -1;
     }
 
     int fd = create_tcp_socket();
     if (fd == -1) {
+        freeaddrinfo(result);
         return -1;
     }
-    /* connect: 이 소켓으로 그 주소에 TCP 연결을 건다 (3-way handshake). 프록시가 백엔드의 클라이언트가 된다 */
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    /* connect: 이 소켓으로 그 주소에 TCP 연결을 건다 (3-way handshake). 프록시가 그 서버의 클라이언트가 된다 */
+    if (connect(fd, result->ai_addr, result->ai_addrlen) == -1) {
         perror("connect");
         close(fd);
+        freeaddrinfo(result);
         return -1;
     }
+    freeaddrinfo(result);
     return fd;
 }
 
@@ -160,40 +214,73 @@ void proxy_connection(int client_fd, struct proxy_config *cfg)
         return;
     }
 
-    /* 2) 요청 줄에서 경로를 꺼내 라우팅 규칙을 찾는다 */
     struct http_request req;
     if (parse_request_line(buf, &req) == -1) {
         send_error(client_fd, 400);
         return;
     }
-    char url_path[PATH_BUF_SIZE];
-    const char *query;
-    if (split_target(req.target, url_path, sizeof(url_path), &query) == -1) {
-        free_request(&req);
-        send_error(client_fd, 414);
-        return;
-    }
-    struct route *route = match_route(cfg, url_path);
-    if (route == NULL) {
-        printf("%s %s → 맞는 규칙 없음 (404)\n", req.method, req.target);
-        free_request(&req);
-        send_error(client_fd, 404);
-        return;
+
+    /*
+     * 2) 보낼 서버를 정한다.
+     * 요청 대상이 "http://"로 시작하면 Forward Proxy: 클라이언트가 적어 보낸 서버로 보낸다.
+     * 아니면 Reverse Proxy: 경로로 라우팅 규칙을 찾고 백엔드를 차례대로 하나 고른다.
+     */
+    struct backend dest;
+    const char *forward_path = NULL; /* Forward Proxy일 때만 쓴다: 절대 URL에서 경로 부분 */
+    if (strncmp(req.target, ABSOLUTE_PREFIX, sizeof(ABSOLUTE_PREFIX) - 1) == 0) {
+        if (parse_absolute_url(req.target, &dest, &forward_path) == -1) {
+            free_request(&req);
+            send_error(client_fd, 400);
+            return;
+        }
+        printf("[Forward] %s %s → %s:%d\n", req.method, req.target, dest.host, dest.port);
+    } else {
+        char url_path[PATH_BUF_SIZE];
+        const char *query;
+        if (split_target(req.target, url_path, sizeof(url_path), &query) == -1) {
+            free_request(&req);
+            send_error(client_fd, 414);
+            return;
+        }
+        struct route *route = match_route(cfg, url_path);
+        if (route == NULL) {
+            printf("[Reverse] %s %s → 맞는 규칙 없음 (404)\n", req.method, req.target);
+            free_request(&req);
+            send_error(client_fd, 404);
+            return;
+        }
+        dest = *pick_backend(route);
+        printf("[Reverse] %s %s → %s:%d\n", req.method, req.target, dest.host, dest.port);
     }
 
-    /* 3) 백엔드를 차례대로 하나 골라 연결한다. 연결하지 못하면 502 Bad Gateway */
-    const struct backend *backend = pick_backend(route);
-    printf("%s %s → %s:%d\n", req.method, req.target, backend->host, backend->port);
-    free_request(&req);
-    int backend_fd = connect_backend(backend);
+    /* 3) 그 서버에 연결한다. 연결하지 못하면 502 Bad Gateway */
+    int backend_fd = connect_backend(&dest);
     if (backend_fd == -1) {
+        free_request(&req);
         send_error(client_fd, 502);
         return;
     }
 
-    /* 4) 받은 요청(요청 줄 + 헤더 + 함께 들어온 본문 앞부분)을 그대로 백엔드에 쓴다 */
-    if (write_all(backend_fd, buf, len) == -1) {
-        perror("write (백엔드)");
+    /*
+     * 4) 요청을 서버에 쓴다.
+     * Reverse Proxy: 받은 바이트(요청 줄 + 헤더 + 함께 들어온 본문 앞부분)를 그대로 쓴다.
+     * Forward Proxy: 요청 줄만 새로 만든다. 서버는 절대 URL이 아니라 경로를 받아야 하므로 "메서드 경로 버전"으로 바꾼다.
+     *   응답 뒤에 서버가 연결을 닫아야 응답의 끝을 알 수 있으므로, 버전을 HTTP/1.0으로 하고 "Connection: close"를 넣는다.
+     *   둘째 줄부터(헤더, 빈 줄, 본문 앞부분)는 받은 그대로 이어서 쓴다.
+     */
+    int written;
+    if (forward_path != NULL) {
+        char first[FIRST_LINE_SIZE];
+        int first_len = snprintf(first, sizeof(first), "%s %s HTTP/1.0\r\nConnection: close\r\n", req.method, forward_path);
+        const char *second_line = strstr(buf, "\r\n") + 2;
+        written = first_len < (int)sizeof(first) && write_all(backend_fd, first, (size_t)first_len) == 0 &&
+                  write_all(backend_fd, second_line, len - (size_t)(second_line - buf)) == 0;
+    } else {
+        written = write_all(backend_fd, buf, len) == 0;
+    }
+    free_request(&req);
+    if (!written) {
+        perror("write (서버)");
         close(backend_fd);
         send_error(client_fd, 502);
         return;
@@ -210,7 +297,7 @@ void proxy_connection(int client_fd, struct proxy_config *cfg)
         }
     }
 
-    /* 6) 백엔드가 연결을 닫을 때까지 응답을 읽어 클라이언트에게 그대로 쓴다. 아무것도 오지 않았으면 502 */
+    /* 6) 서버가 연결을 닫을 때까지 응답을 읽어 클라이언트에게 그대로 쓴다. 아무것도 오지 않았으면 502 */
     size_t sent = relay_until_close(backend_fd, client_fd);
     close(backend_fd);
     if (sent == 0) {

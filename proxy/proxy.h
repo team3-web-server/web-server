@@ -2,8 +2,10 @@
 #define PROXY_H
 
 /*
- * Reverse Proxy: 클라이언트의 요청을 받아 백엔드 서버 중 하나에 그대로 전달하고, 백엔드의 응답을 클라이언트에게 돌려준다.
- * 어느 백엔드로 보낼지는 요청 경로의 앞부분(접두사)으로 정한다.
+ * 프록시: 클라이언트의 요청을 받아 다른 서버에 전달하고, 그 서버의 응답을 클라이언트에게 돌려준다.
+ * 어느 서버로 보낼지는 요청 줄의 요청 대상 모양으로 갈린다.
+ *   Reverse Proxy: 요청 대상이 "/api/users" 같은 경로다. 설정 파일의 규칙으로 프록시가 백엔드를 고른다.
+ *   Forward Proxy: 요청 대상이 "http://example.com/a" 같은 절대 URL이다. 클라이언트가 적어 보낸 그 서버로 보낸다.
  */
 
 #define MAX_ROUTES 8
@@ -43,10 +45,17 @@ struct route *match_route(struct proxy_config *cfg, const char *url_path);
 /* 규칙의 백엔드를 차례대로 하나씩 돌려준다 (라운드로빈): 0, 1, ..., 마지막, 다시 0 */
 const struct backend *pick_backend(struct route *route);
 
-/* 백엔드에 TCP 연결을 걸어 그 fd를 돌려준다. 실패하면 원인을 출력하고 -1 */
+/*
+ * 절대 URL "http://주소[:포트][/경로]"를 나눈다. 주소와 포트는 dest에 넣고(포트가 없으면 80),
+ * *path는 target 안에서 경로가 시작하는 곳을 가리킨다 (경로가 없으면 "/").
+ * 성공하면 0. "http://"로 시작하지 않거나 주소가 비었거나 포트가 틀리면 -1.
+ */
+int parse_absolute_url(const char *target, struct backend *dest, const char **path);
+
+/* 서버에 TCP 연결을 걸어 그 fd를 돌려준다. host는 숫자 주소와 이름 모두 된다. 실패하면 원인을 출력하고 -1 */
 int connect_backend(const struct backend *backend);
 
-/* 클라이언트 연결 하나를 처리한다: 요청을 읽고, 백엔드를 골라 전달하고, 응답을 돌려준다. client_fd는 닫지 않는다 */
+/* 클라이언트 연결 하나를 처리한다: 요청을 읽고, 보낼 서버를 정해 전달하고, 응답을 돌려준다. client_fd는 닫지 않는다 */
 void proxy_connection(int client_fd, struct proxy_config *cfg);
 
 #endif /* PROXY_H */
