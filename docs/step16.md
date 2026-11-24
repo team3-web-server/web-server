@@ -19,6 +19,7 @@ flowchart LR
 | 1. 문제 | 꺼진 백엔드를 계속 골라 200과 502가 번갈아 나온다 | (고치기 전 `pick_backend`) |
 | 2. 헬스 체크 | 프록시 프로세스가 스레드 하나를 더 만든다. 이 스레드가 2초마다 모든 백엔드에 `connect`만 해 보고 바로 `close`한다. 연결되면 살아 있음, 안 되면 죽음 | `proxy/main.c`의 `health_loop`, `proxy/proxy.c`의 `check_backends` |
 | 3. 자동 제외 | `struct backend`에 `alive`를 둔다. `pick_backend`는 `next`부터 한 바퀴만 보면서 `alive`가 0인 백엔드를 건너뛴다. 모두 죽었으면 `NULL`을 돌려주고 프록시는 503을 보낸다 | `proxy/proxy.h`의 `struct backend`, `proxy/proxy.c`의 `pick_backend`, `proxy_request` |
+| 3-1. failover | 헬스 체크가 알아채기 전에 죽은 백엔드를 골랐다면 `connect`가 실패한다. 그 백엔드의 `alive`를 바로 0으로 바꾸고(`mark_backend_dead`) 다음 백엔드로 다시 시도한다. 클라이언트는 에러를 받지 않는다 (준호의 리뷰로 추가) | `proxy/proxy.c`의 `mark_backend_dead`, `proxy_request` |
 | 4. 자동 복귀 | 죽은 백엔드에도 계속 `connect`해 본다. 연결되면 `alive`를 1로 되돌린다 | `check_backends` |
 | 5. 잠금 | `alive`는 헬스 체크 스레드가 쓰고 요청을 처리하는 스레드들이 읽는다. 순번(`next`)을 지키던 `next_lock`으로 함께 지킨다. `connect`는 잠금 밖에서 하고, 값을 쓸 때만 잠금을 잡는다 | `check_backends`, `pick_backend` |
 
@@ -26,8 +27,8 @@ flowchart LR
 
 | 상태 코드 | 언제 |
 |---|---|
-| 502 Bad Gateway | 고른 서버에 `connect`했는데 실패했다. 백엔드가 죽은 직후부터 다음 헬스 체크까지(최대 2초), 그리고 Forward Proxy의 목적지가 죽어 있을 때 |
-| 503 Service Unavailable | 규칙의 백엔드가 모두 `alive == 0`이다. `connect`를 시도하지 않는다 |
+| 502 Bad Gateway | Forward Proxy에서 클라이언트가 정한 서버에 `connect`했는데 실패했다. 대신 보낼 다른 서버가 없다 |
+| 503 Service Unavailable | Reverse Proxy에서 규칙의 백엔드 중 살아 있는 것이 없다. 처음부터 모두 `alive == 0`이었거나, 시도한 백엔드가 모두 `connect`에 실패했다 |
 
 ## 내린 결정과 이유
 
@@ -62,6 +63,7 @@ for i in 1 2 3 4; do curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8
 
 ## 한계
 
-- 백엔드가 죽은 직후부터 다음 검사까지(최대 2초)는 그 백엔드 차례의 요청이 502가 된다.
+- `connect`에 제한 시간이 없다. 지금은 백엔드가 모두 `127.0.0.1`이라 꺼져 있으면 `connect`가 바로 실패하지만, 응답하지 않는 다른 컴퓨터를 백엔드로 적으면 `connect`가 오래 멈춘다.
+- `connect`가 실패한 이유를 구분하지 않는다. 프록시 프로세스의 fd가 부족해서 실패해도 백엔드가 죽은 것으로 본다.
 - 백엔드의 웹 서버 프로세스는 헬스 체크 연결도 보통 연결처럼 받는다. 2초마다 `fork`를 한 번 하고 "헤더가 끝나기 전에 연결이 닫혔습니다"를 출력한다.
 - 포트는 듣고 있지만 응답을 못 하는 백엔드(멈춘 프로세스)는 살아 있다고 본다.

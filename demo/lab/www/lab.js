@@ -226,15 +226,15 @@
           controls: []
         },
         {
-          key: 'bad', tab: '502와 503', stage: 'proxy',
-          title: '502와 503: 고른 백엔드에 연결하지 못했을 때와 고를 백엔드가 없을 때',
+          key: 'bad', tab: 'Failover와 503', stage: 'proxy',
+          title: 'Failover와 503: 고른 백엔드에 연결하지 못하면 다음 백엔드로, 남은 백엔드가 없으면 503',
           controls: [
             { label: '백엔드 8003을 끄고 바로 GET /api/ 세 번', cls: 'primary plain', run: function () { return runGap(); } },
-            { hint: '헬스 체크가 알아채기 전이라 502' },
+            { hint: '헬스 체크가 알아채기 전이지만 에러가 나오지 않는다' },
             { sep: true },
             { toggle: 8003 }, { toggle: 8002 },
             { label: 'GET /static/', cls: 'primary', run: get(8080, '/static/') },
-            { hint: '8002를 끄고 2초 뒤에 보내면 503' }
+            { hint: '/static/ 의 백엔드는 8002 하나라, 끄면 503' }
           ],
           panes: [{ log: 'proxy' }, { log: 8003 }, { log: 8002 }]
         },
@@ -449,6 +449,7 @@
 
   function logClass(line) {
     if (line.indexOf('[Reverse]') === 0) { return /\((404|503)\)/.test(line) ? 'bad' : 'reverse'; }
+    if (line.indexOf('[Failover]') === 0) { return 'bad'; }
     if (line.indexOf('[Health]') === 0) { return line.indexOf('연결 실패') > 0 ? 'bad' : 'good'; }
     if (line.indexOf('헬스 체크 연결') === 0) { return 'probe'; }
     if (line.indexOf('[Forward]') === 0) { return line.indexOf('(403)') > 0 ? 'bad' : 'forward'; }
@@ -508,7 +509,7 @@
   function noteHealth(lines) {
     var changed = false;
     lines.forEach(function (line) {
-      var m = /^\[Health\] 127\.0\.0\.1:(\d+) (연결 실패|연결됨)/.exec(line);
+      var m = /^\[(?:Health|Failover)\] 127\.0\.0\.1:(\d+) (연결 실패|연결됨)/.exec(line);
       if (m) { excluded[m[1]] = m[2] === '연결 실패'; changed = true; }
     });
     if (changed) { paintStatus(); }
@@ -1313,8 +1314,19 @@
       return pullLogs();
     }).then(function (fresh) {
       /* 프록시 로그에 새로 찍힌 목적지 줄을 요청 순서대로 읽는다 */
-      var decisions = (fresh.proxy || []).filter(function (l) { return /^\[(Reverse|Forward)\] /.test(l); })
-        .map(function (l) { return readDecision([l]); });
+      /* "[Reverse] … → 주소" 뒤에 "[Failover] …" 줄이 오면 그 백엔드는 연결에 실패한 것이고, 같은 요청의 다음 [Reverse] 줄이 이어진다 */
+      var decisions = [];
+      var failed = [];
+      (fresh.proxy || []).forEach(function (l, i, all) {
+        if (!/^\[(Reverse|Forward)\] /.test(l)) { return; }
+        var d = readDecision([l]);
+        /* 사이에 "connect: Connection refused" 같은 줄이 낄 수 있으므로, 다음 [ ]로 시작하는 줄을 본다 */
+        var next = all.slice(i + 1).filter(function (x) { return /^\[(Reverse|Forward|Failover)\] /.test(x); })[0] || '';
+        if (/^\[Failover\] /.test(next)) { failed.push(d.port); return; }
+        d.failed = failed;
+        failed = [];
+        decisions.push(d);
+      });
       sent.className = '';
       sent.textContent = '';
       got.className = '';
@@ -1332,6 +1344,12 @@
           return animateProxy({ status: ok ? 200 : 502, status_line: q.status_line || 'HTTP/1.1 502 응답 없음' }, decisions[i] || null, true);
         }).then(function () {
           setChip('client-chip', '요청 ' + (i + 1) + ' / ' + result.requests.length, 'ok');
+          /* 이 요청에서 연결에 실패해 건너뛴 백엔드를 표시한다 */
+          ((decisions[i] || {}).failed || []).forEach(function (port) {
+            if ($('node-' + port)) { $('node-' + port).classList.add('fail'); }
+            setChip('proxy-note', '[Failover] ' + port + ' 연결 실패 → ' + decisions[i].text, 'bad');
+          });
+          return sleep(((decisions[i] || {}).failed || []).length ? 700 : 0);
         });
       });
       return chain;
@@ -1342,7 +1360,7 @@
     }).then(refreshStatus);
   }
 
-  /* ---------- 502: 백엔드 8003을 끈 직후, 헬스 체크가 알아채기 전에 /api/ 요청 세 개를 보낸다 ---------- */
+  /* ---------- Failover: 백엔드 8003을 끈 직후, 헬스 체크가 알아채기 전에 /api/ 요청 세 개를 보낸다 ---------- */
 
   function runGap() {
     setStage('proxy');
@@ -1355,7 +1373,7 @@
       paintStatus();
       return runMultiProxy(false);
     }).then(function () {
-      showWhy('백엔드 8003을 끈 직후라 프록시 프로세스는 아직 8003이 죽은 줄 모른다. 8003 차례인 요청은 connect가 실패해 502가 됐다. 2초 안에 헬스 체크 스레드가 알아채면 프록시 로그에 [Health] 줄이 찍히고, 그 뒤로는 8003을 건너뛴다.');
+      showWhy('백엔드 8003을 끈 직후라 프록시 프로세스는 아직 8003이 죽은 줄 모른다. 8003을 고른 요청은 connect가 실패했지만, 프록시 프로세스가 8003을 바로 제외하고 8001로 다시 연결해서 클라이언트는 200을 받았다. 프록시 로그의 [Failover] 줄을 확인한다. 그 뒤 요청은 8003을 고르지 않는다.');
     });
   }
 
