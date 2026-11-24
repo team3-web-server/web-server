@@ -24,7 +24,7 @@ struct route {
     char prefix[PREFIX_SIZE];
     struct backend backends[MAX_BACKENDS];
     int backend_count;
-    int next; /* 다음 요청을 보낼 백엔드의 순번 (라운드로빈) */
+    int next; /* 다음 요청을 보낼 백엔드의 순번 (라운드로빈). 여러 스레드가 함께 쓰므로 pick_backend가 잠금을 잡고 읽고 쓴다 */
 };
 
 struct proxy_config {
@@ -42,7 +42,7 @@ int load_config(const char *path, struct proxy_config *cfg);
 /* 경로가 어느 규칙의 접두사로 시작하는지 찾는다. 위에 적힌 규칙이 먼저다. 없으면 NULL */
 struct route *match_route(struct proxy_config *cfg, const char *url_path);
 
-/* 규칙의 백엔드를 차례대로 하나씩 돌려준다 (라운드로빈): 0, 1, ..., 마지막, 다시 0 */
+/* 규칙의 백엔드를 차례대로 하나씩 돌려준다 (라운드로빈): 0, 1, ..., 마지막, 다시 0. 여러 스레드가 동시에 불러도 된다 */
 const struct backend *pick_backend(struct route *route);
 
 /*

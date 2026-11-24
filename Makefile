@@ -9,7 +9,8 @@
 # =====================================================================
 
 CC      := gcc
-CFLAGS  := -Wall -Wextra -std=c11 -g -Iinclude -Iproxy
+# -pthread: 프록시가 연결마다 스레드를 만든다 (pthread_create)
+CFLAGS  := -Wall -Wextra -std=c11 -g -pthread -Iinclude -Iproxy
 ASANFLAGS := -fsanitize=address,leak -fno-omit-frame-pointer
 
 SRCS    := $(wildcard src/*.c)

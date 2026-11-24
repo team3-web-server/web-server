@@ -7,6 +7,7 @@
 #include "net.h"
 #include "response.h"
 
+#include <pthread.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,10 +90,15 @@ struct route *match_route(struct proxy_config *cfg, const char *url_path)
     return NULL;
 }
 
+/* 순번(next)을 읽고 쓰는 동안 잡는 잠금. 여러 스레드가 같은 순번을 읽어 같은 백엔드를 고르지 않게 한다 */
+static pthread_mutex_t next_lock = PTHREAD_MUTEX_INITIALIZER;
+
 const struct backend *pick_backend(struct route *route)
 {
+    pthread_mutex_lock(&next_lock);
     const struct backend *backend = &route->backends[route->next];
     route->next = (route->next + 1) % route->backend_count;
+    pthread_mutex_unlock(&next_lock);
     return backend;
 }
 
