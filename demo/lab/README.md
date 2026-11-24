@@ -1,16 +1,16 @@
 # Web Server Lab (발표용 데모 페이지)
 
 버튼을 누르면 CGI 프로세스가 웹 서버나 프록시에 실제 요청을 보내고, 받은 응답과 각 프로세스의 로그, 커널의 fd 표를 한 화면에 보여 주는 페이지다.
-위쪽의 주제를 누르면 그 주제의 장면만 아래 줄에 펼쳐진다. `구현 전` 표시가 붙은 장면은 제목만 있고, 코드를 구현하면 채운다.
+위쪽의 주제를 누르면 그 주제의 장면만 아래 줄에 펼쳐진다.
 
 | 주제 | 장면 |
 |---|---|
 | 소켓과 TCP | Socket과 fd, TCP Handshake와 레이어 |
 | HTTP | HTTP GET, 상태 코드(13개), POST, HTTP/1.0과 HTTP/1.1 |
-| 동적 요청과 동시성 | 정적과 동적 (CGI), fork 있음과 없음 |
-| Reverse Proxy | Reverse Proxy, Round-Robin, 가중치 Round-Robin(구현 전), 502 Bad Gateway, Health Check(구현 전) |
+| 동적 요청과 동시성 | 정적과 동적 (CGI), fork 있음과 없음, 스레드 있음과 없음 |
+| Reverse Proxy | Reverse Proxy, Round-Robin, Failover와 503, Health Check |
 | Forward Proxy | Forward Proxy, 허용 목록 |
-| 프록시 부가 기능 | X-Forwarded-For, Response Caching, /status (모두 구현 전) |
+| 프록시 부가 기능 | keep-alive, Response Caching |
 
 ## 실행
 

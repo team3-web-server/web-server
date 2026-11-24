@@ -221,11 +221,6 @@
           panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
         },
         {
-          key: 'wrr', tab: '가중치 Round-Robin', badge: '구현 전', shell: true,
-          title: '가중치 Round-Robin: 성능이 좋은 백엔드에 더 많이 보낸다',
-          controls: []
-        },
-        {
           key: 'bad', tab: 'Failover와 503', stage: 'proxy',
           title: 'Failover와 503: 고른 백엔드에 연결하지 못하면 다음 백엔드로, 남은 백엔드가 없으면 503',
           controls: [
@@ -293,24 +288,14 @@
           panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
         },
         {
-          key: 'xff', tab: 'X-Forwarded-For', badge: '구현 전', shell: true,
-          title: 'X-Forwarded-For: 백엔드에게 원래 클라이언트의 주소를 알려 준다',
-          controls: []
-        },
-        {
           key: 'cache', tab: 'Response Caching', stage: 'proxy',
           title: 'Response Caching: 같은 요청은 백엔드에 다시 묻지 않는다',
           controls: [
             { label: 'GET /cgi-bin/slow?page=1', cls: 'primary', run: function () { return runCache('/cgi-bin/slow?page=1'); } },
             { label: 'GET /cgi-bin/slow?page=2', cls: 'primary', run: function () { return runCache('/cgi-bin/slow?page=2'); } },
-            { hint: '백엔드는 응답에 3초가 걸린다. 사본은 10초 동안 쓴다' }
+            { hint: '백엔드는 응답에 3초가 걸린다. 사본은 백엔드에 물어본 때부터 10초 동안 쓴다 (저장한 뒤로는 약 7초)' }
           ],
           panes: [{ conf: true }, { log: 'proxy' }, { log: 8004 }]
-        },
-        {
-          key: 'statuspage', tab: '/status', badge: '구현 전', shell: true,
-          title: '/status: 프록시가 자기 상태를 응답으로 알려 준다',
-          controls: []
         }
       ]
     }
@@ -1391,7 +1376,7 @@
       var ms = result.ms < 10 ? result.ms.toFixed(1) : Math.round(result.ms);
       showWhy(hit
         ? '이번 요청은 ' + ms + 'ms 걸렸다. 프록시 프로세스의 메모리에 같은 요청 대상(' + target + ')의 사본이 있어서, 백엔드에 연결하지 않고 사본을 보냈다 (hit). 백엔드 8004의 로그에는 새 줄이 없다.'
-        : '이번 요청은 ' + ms + 'ms 걸렸다. 사본이 없거나 만료돼서 백엔드 8004가 응답을 만들었다 (miss).' + (stored ? ' 프록시 프로세스가 그 응답을 사본으로 저장했다. 10초 안에 같은 버튼을 다시 누르면 hit이다.' : ''));
+        : '이번 요청은 ' + ms + 'ms 걸렸다. 사본이 없거나 만료돼서 백엔드 8004가 응답을 만들었다 (miss).' + (stored ? ' 프록시 프로세스가 그 응답을 사본으로 저장했다. 사본의 10초는 백엔드에 물어본 때부터 세므로, 지금부터 약 7초 안에 같은 버튼을 다시 누르면 hit이다.' : ''));
       return animateProxy(result, hit ? { cacheHit: true, kind: 'Cache', host: null, port: null, text: '사본을 보냄' } : readDecision(lines), false);
     }).then(refreshStatus);
   }
