@@ -262,22 +262,17 @@ void proxy_connection(int client_fd, struct proxy_config *cfg)
     }
 
     /*
-     * 4) 요청을 서버에 쓴다.
-     * Reverse Proxy: 받은 바이트(요청 줄 + 헤더 + 함께 들어온 본문 앞부분)를 그대로 쓴다.
-     * Forward Proxy: 요청 줄만 새로 만든다. 서버는 절대 URL이 아니라 경로를 받아야 하므로 "메서드 경로 버전"으로 바꾼다.
-     *   응답 뒤에 서버가 연결을 닫아야 응답의 끝을 알 수 있으므로, 버전을 HTTP/1.0으로 하고 "Connection: close"를 넣는다.
-     *   둘째 줄부터(헤더, 빈 줄, 본문 앞부분)는 받은 그대로 이어서 쓴다.
+     * 4) 요청을 서버에 쓴다. 요청 줄만 새로 만들고, 둘째 줄부터(헤더, 빈 줄, 본문 앞부분)는 받은 그대로 이어서 쓴다.
+     * 버전을 HTTP/1.0으로 하고 "Connection: close"를 넣는다. 프록시는 서버가 연결을 닫는 것으로 응답의 끝을 알기 때문이다.
+     *   (서버가 keep-alive로 연결을 유지하면, 6)의 read가 서버의 유휴 제한 시간까지 돌아오지 않는다.)
+     * Forward Proxy에서는 요청 대상도 바꾼다. 서버는 절대 URL이 아니라 경로를 받아야 한다.
      */
-    int written;
-    if (forward_path != NULL) {
-        char first[FIRST_LINE_SIZE];
-        int first_len = snprintf(first, sizeof(first), "%s %s HTTP/1.0\r\nConnection: close\r\n", req.method, forward_path);
-        const char *second_line = strstr(buf, "\r\n") + 2;
-        written = first_len < (int)sizeof(first) && write_all(backend_fd, first, (size_t)first_len) == 0 &&
+    const char *backend_target = forward_path != NULL ? forward_path : req.target;
+    char first[FIRST_LINE_SIZE];
+    int first_len = snprintf(first, sizeof(first), "%s %s HTTP/1.0\r\nConnection: close\r\n", req.method, backend_target);
+    const char *second_line = strstr(buf, "\r\n") + 2;
+    int written = first_len < (int)sizeof(first) && write_all(backend_fd, first, (size_t)first_len) == 0 &&
                   write_all(backend_fd, second_line, len - (size_t)(second_line - buf)) == 0;
-    } else {
-        written = write_all(backend_fd, buf, len) == 0;
-    }
     free_request(&req);
     if (!written) {
         perror("write (서버)");
