@@ -57,8 +57,8 @@ curl -s -o /dev/null http://localhost:8080/static/
 ```
 [Cache] MISS /static/
 [Reverse] GET /static/ → 127.0.0.1:8002
-[Cache] 저장 /static/ 136바이트 (10초 동안 씀)
-[Cache] HIT /static/ → 사본 136바이트를 보냄 (백엔드에 연결하지 않음)
+[Cache] 저장 /static/ 139바이트 (10초 동안 씀)
+[Cache] HIT /static/ → 사본 139바이트를 보냄 (백엔드에 연결하지 않음)
 ```
 
 ## 테스트
