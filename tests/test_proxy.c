@@ -2,17 +2,17 @@
  * proxy.c, cache.c 단위 테스트: 설정 파일 읽기, 경로로 규칙 찾기, 라운드로빈, 절대 URL 나누기, 응답 캐시.
  * 각 테스트는 실패하면 FAIL 줄을 출력하고, 실패가 하나라도 있으면 종료 코드 1.
  */
-/* nanosleep, mkstemp를 쓰려면 헤더보다 먼저 있어야 한다 (-std=c11) */
+/* mkstemp를 쓰려면 헤더보다 먼저 있어야 한다 (-std=c11) */
 #define _POSIX_C_SOURCE 200809L
 
 #include "proxy.h"
 
 #include "cache.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -28,11 +28,49 @@ static int failures = 0;
     } while (0)
 
 /* 내용이 text인 임시 설정 파일을 만들고 load_config의 결과를 돌려준다 */
-/* 2밀리초 쉰다. 캐시가 사본마다 "마지막으로 쓴 시각"(밀리초)을 다르게 기록하게 한다 */
-static void short_sleep(void)
+/* 테스트용 시계: 캐시가 "지금"이라고 믿을 시각(밀리초)을 테스트가 정한다. 기다리지 않고 만료를 확인할 수 있다 */
+static long long fake_time;
+
+static long long fake_now(void)
 {
-    struct timespec ts = {0, 2000000};
-    nanosleep(&ts, NULL);
+    return fake_time;
+}
+
+/* key가 캐시에 있으면(hit) 1. 받은 복사본은 바로 해제한다 */
+static int has(const char *key)
+{
+    char *got;
+    size_t got_len;
+    if (!cache_get(key, &got, &got_len)) {
+        return 0;
+    }
+    free(got);
+    return 1;
+}
+
+/*
+ * 엣지 3 확인용: 스레드 여럿이 같은 키를 동시에 찾고, 저장하고, 시계를 만료 시각 너머로 넘긴다.
+ * 잠금 구간이 잘못됐으면 해제한 메모리를 읽게 되고, make asan이 그것을 잡는다.
+ */
+static void *hammer(void *arg)
+{
+    long seed = (long)arg;
+    for (int i = 0; i < 2000; i++) {
+        char *got;
+        size_t got_len;
+        if (cache_get("/shared", &got, &got_len)) {
+            if (got_len != 4 || memcmp(got, "body", 4) != 0) {
+                failures++;
+            }
+            free(got);
+        } else {
+            cache_put("/shared", "body", 4);
+        }
+        if ((i + seed) % 7 == 0) {
+            fake_time += CACHE_TTL_MS; /* 가끔 사본을 만료시킨다 */
+        }
+    }
+    return NULL;
 }
 
 static int load_text(const char *text, struct proxy_config *cfg)
@@ -123,7 +161,9 @@ int main(void)
     CHECK(is_cache_path(&cfg, "http://127.0.0.1:8002/static/a.css") == 0, "is_cache_path: 절대 URL(Forward 요청) → 캐시 대상 아님");
     CHECK(load_text("cache static/\n", &cfg) == -1, "load_config: cache 뒤의 접두사가 /로 시작하지 않으면 -1");
 
-    /* 응답 캐시 */
+    /* 응답 캐시. 시계를 테스트용으로 바꾼다 */
+    cache_clock = fake_now;
+    fake_time = 0;
     char *got;
     size_t got_len;
     cache_clear();
@@ -148,13 +188,11 @@ int main(void)
     for (int i = 0; i < 10; i++) {
         snprintf(key, sizeof(key), "/k%d", i);
         cache_put(key, big, CACHE_OBJECT_MAX);
-        short_sleep();
     }
     int hit0 = cache_get("/k0", &got, &got_len); /* /k0을 방금 썼으므로, 가장 오래 쓰지 않은 사본은 /k1이 된다 */
     if (hit0) {
         free(got);
     }
-    short_sleep();
     cache_put("/k10", big, CACHE_OBJECT_MAX);
     int has0 = cache_get("/k0", &got, &got_len);
     if (has0) {
@@ -169,6 +207,82 @@ int main(void)
         free(got);
     }
     CHECK(hit0 == 1 && has0 == 1 && has1 == 0 && has10 == 1, "cache_put: 전체 1 MiB를 넘으면 가장 오래 쓰지 않은 사본(/k1)을 버린다 (LRU)");
+
+    /* ---- TTL 엣지 케이스 ---- */
+
+    /* 1. 경계: 만료 시각 = 저장한 때 + TTL. 그 시각이 된 순간부터 만료다 */
+    cache_clear();
+    fake_time = 1000;
+    cache_put("/a", "v1", 2);
+    fake_time = 1000 + CACHE_TTL_MS - 1;
+    CHECK(has("/a") == 1, "엣지 1: 만료 시각 1밀리초 전에는 hit");
+    fake_time = 1000 + CACHE_TTL_MS;
+    CHECK(has("/a") == 0, "엣지 1: 만료 시각이 된 순간은 miss (지금 >= 만료 시각)");
+
+    /* 2. 지연 삭제: 만료된 사본은 찾은 그 자리에서 지워진다 */
+    cache_clear();
+    fake_time = 0;
+    cache_put("/a", "12345", 5);
+    cache_put("/b", "123", 3);
+    fake_time = CACHE_TTL_MS;
+    CHECK(cache_size() == 8, "엣지 2: 만료됐어도 아무도 찾지 않으면 메모리에 남아 있다");
+    CHECK(has("/a") == 0 && cache_size() == 3, "엣지 2: 만료된 사본을 찾으면 miss이고, 그 사본은 지워진다");
+    cache_put("/a", "new", 3);
+    CHECK(has("/a") == 1 && cache_size() == 6, "엣지 2: miss 뒤에 넣은 새 사본으로 hit");
+
+    /* 3. 확인과 교체 사이 끼어들기: A가 miss를 본 뒤 저장하기 전에 B가 같은 키를 저장한다 */
+    cache_clear();
+    fake_time = 0;
+    cache_put("/a", "old", 3);
+    fake_time = CACHE_TTL_MS;
+    int a_missed = !has("/a");            /* 스레드 A: 만료를 보고 miss. 이제 백엔드에 다녀온다 */
+    cache_put("/a", "from-B", 6);         /* 스레드 B: 그 사이에 같은 키를 저장한다 */
+    cache_put("/a", "from-A", 6);         /* 스레드 A: 돌아와서 저장한다. 잠금 안에서 키로 다시 찾아 B의 사본을 바꾼다 */
+    int ok3 = cache_get("/a", &got, &got_len) == 1 && got_len == 6 && memcmp(got, "from-A", 6) == 0;
+    if (ok3) {
+        free(got);
+    }
+    CHECK(a_missed && ok3 && cache_size() == 6, "엣지 3: 두 스레드가 같은 키를 차례로 저장해도 사본은 하나만 남는다");
+
+    /* 3. 실제 스레드 넷으로: 동시에 찾고, 만료시키고, 저장한다 */
+    cache_clear();
+    int before = failures;
+    pthread_t tids[4];
+    for (long t = 0; t < 4; t++) {
+        pthread_create(&tids[t], NULL, hammer, (void *)t);
+    }
+    for (int t = 0; t < 4; t++) {
+        pthread_join(tids[t], NULL);
+    }
+    CHECK(failures == before && cache_size() <= 4, "엣지 3: 스레드 넷이 같은 키를 동시에 찾고 저장해도 사본은 하나 이하이고 내용이 깨지지 않는다");
+
+    /* 4. hit은 만료 시각을 늘리지 않는다 */
+    cache_clear();
+    fake_time = 0;
+    cache_put("/a", "v1", 2);
+    fake_time = CACHE_TTL_MS - 1;
+    CHECK(has("/a") == 1, "엣지 4: 만료 직전에 hit");
+    fake_time = CACHE_TTL_MS;
+    CHECK(has("/a") == 0, "엣지 4: 방금 hit했어도 만료 시각이 되면 miss (hit이 수명을 늘리지 않는다)");
+    cache_put("/a", "v2", 2);
+    fake_time = CACHE_TTL_MS + CACHE_TTL_MS - 1;
+    CHECK(has("/a") == 1, "엣지 4: 다시 저장하면 그때부터 새로 TTL만큼 쓴다");
+
+    /* 6. 자리가 모자라면 만료된 사본을 먼저 버린다. /old는 가장 최근에 쓴 사본이지만 만료됐다 */
+    cache_clear();
+    fake_time = 0;
+    cache_put("/old", big, CACHE_OBJECT_MAX);
+    fake_time = 5000;
+    for (int i = 1; i < 10; i++) {
+        snprintf(key, sizeof(key), "/k%d", i);
+        cache_put(key, big, CACHE_OBJECT_MAX);
+    }
+    int old_hit = has("/old"); /* /old를 방금 썼다. LRU만 보면 가장 오래 쓰지 않은 사본은 /k1이다 */
+    fake_time = CACHE_TTL_MS;  /* /old(0에 저장)는 만료, /k1~/k9(5000에 저장)는 아직 아니다 */
+    cache_put("/new", big, CACHE_OBJECT_MAX);
+    CHECK(old_hit == 1 && has("/old") == 0 && has("/k1") == 1 && has("/new") == 1,
+          "엣지 6: 만료된 사본(/old)을 먼저 버리고, 가장 오래 쓰지 않은 사본(/k1)은 남긴다");
+
     free(big);
     cache_clear();
 
