@@ -55,7 +55,12 @@ int parse_absolute_url(const char *target, struct backend *dest, const char **pa
 /* 서버에 TCP 연결을 걸어 그 fd를 돌려준다. host는 숫자 주소와 이름 모두 된다. 실패하면 원인을 출력하고 -1 */
 int connect_backend(const struct backend *backend);
 
-/* 클라이언트 연결 하나를 처리한다: 요청을 읽고, 보낼 서버를 정해 전달하고, 응답을 돌려준다. client_fd는 닫지 않는다 */
+/*
+ * 클라이언트 연결 하나를 처리한다: 요청을 읽고, 보낼 서버를 정해 전달하고, 응답을 돌려주기를 반복한다 (keep-alive).
+ * 클라이언트와의 연결만 유지한다. 서버와의 연결은 요청마다 새로 맺고 응답 뒤에 닫는다.
+ * 반복을 멈추는 때: 요청이 닫자고 했을 때, 클라이언트가 닫았을 때, 5초 동안 다음 요청이 없을 때,
+ * 프록시가 에러 응답을 보냈을 때, 서버의 응답에 Content-Length가 없을 때. client_fd는 닫지 않는다.
+ */
 void proxy_connection(int client_fd, struct proxy_config *cfg);
 
 #endif /* PROXY_H */
