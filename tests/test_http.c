@@ -227,6 +227,7 @@ static void test_head_closed(void)
     CHECK(ret == HEAD_CLOSED, "헤더가 끝나기 전에 닫히면 HEAD_CLOSED");
     CHECK(len == 25, "닫히기 전까지 받은 바이트 수가 25");
 
+    len = 0; /* *len은 buf에 이미 들어 있는 바이트 수이므로, 새 연결을 읽기 전에 0으로 되돌린다 */
     ret = run_head(pieces, 0, buf, sizeof(buf), &len);
     CHECK(ret == HEAD_CLOSED, "아무것도 보내지 않고 닫히면 HEAD_CLOSED");
     CHECK(len == 0 && buf[0] == '\0', "받은 바이트 수가 0이고 buf는 빈 문자열");
@@ -245,8 +246,27 @@ static void test_head_too_large(void)
 
     /* 헤더가 버퍼에 꼭 맞게 들어가는 경계: 15바이트 요청과 16바이트 버퍼 */
     const char *const exact[] = {"GET / H\r\nA:\r\n\r\n"};
+    len = 0;
     ret = run_head(exact, 1, buf, sizeof(buf), &len);
     CHECK(ret == HEAD_OK && len == 15, "헤더가 버퍼 크기 - 1에 꼭 맞으면 HEAD_OK");
+}
+
+/* keep-alive: 앞 요청과 함께 미리 들어온 다음 요청의 앞부분이 buf에 있을 때 */
+static void test_head_already_in_buf(void)
+{
+    /* buf에 다음 요청이 통째로 들어 있으면 read하지 않고 HEAD_OK (fd가 -1이어도 된다) */
+    char buf[256] = "GET /b HTTP/1.1\r\nHost: x\r\n\r\n";
+    size_t len = strlen(buf);
+    CHECK(read_request_head(-1, buf, sizeof(buf), &len) == HEAD_OK && len == 28,
+          "buf에 이미 빈 줄까지 있으면 read 없이 HEAD_OK");
+
+    /* buf에 앞부분만 있으면 나머지를 read해서 이어 붙인다 */
+    const char *const rest[] = {"TTP/1.1\r\nHost: x\r\n\r\n"};
+    char part[256] = "GET /b H";
+    len = strlen(part);
+    int ret = run_head(rest, 1, part, sizeof(part), &len);
+    CHECK(ret == HEAD_OK && strcmp(part, "GET /b HTTP/1.1\r\nHost: x\r\n\r\n") == 0,
+          "buf에 앞부분만 있으면 나머지를 읽어 이어 붙임");
 }
 
 static void test_head_bad_args(void)
@@ -443,6 +463,7 @@ int main(void)
     test_head_split();
     test_head_closed();
     test_head_too_large();
+    test_head_already_in_buf();
     test_head_bad_args();
     test_build_file_path();
     test_split_target();

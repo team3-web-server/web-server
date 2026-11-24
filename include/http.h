@@ -25,12 +25,15 @@ void free_request(struct http_request *req);
 #define HEAD_OK 0 /* 빈 줄("\r\n\r\n")까지 받았다 */
 #define HEAD_CLOSED 1 /* 그 전에 클라이언트가 연결을 닫았다 */
 #define HEAD_TOO_LARGE 2 /* 버퍼가 가득 찼는데 빈 줄이 없다 */
+#define HEAD_TIMEOUT 3 /* 소켓에 건 읽기 제한 시간(SO_RCVTIMEO) 동안 아무것도 오지 않았다 */
 #define HEAD_ERROR (-1) /* read 실패 */
 
 /*
  * fd에서 빈 줄("\r\n\r\n")이 나올 때까지 read를 반복해 buf에 이어 붙인다. buf는 항상 '\0'으로 끝난다.
  * 요청 하나가 read 여러 번에 나뉘어 올 수 있어서, 받을 때마다 지금까지 받은 전체에서 빈 줄을 찾는다.
  * size는 buf의 크기이고, *len에는 받은 바이트 수가 들어간다.
+ * 부를 때 *len은 buf에 이미 들어 있는 바이트 수다 (처음이면 0). keep-alive에서 앞 요청과 함께 미리 들어온
+ * 다음 요청의 앞부분을 이어서 쓰기 위한 것이다. 이미 빈 줄이 있으면 read하지 않고 HEAD_OK를 돌려준다.
  */
 int read_request_head(int fd, char *buf, size_t size, size_t *len);
 

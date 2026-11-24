@@ -98,9 +98,15 @@ int read_request_head(int fd, char *buf, size_t size, size_t *len)
     if (buf == NULL || len == NULL || size < 2) {
         return HEAD_ERROR;
     }
-    size_t total = 0;
-    buf[0] = '\0';
-    *len = 0;
+    /* buf에 이미 들어 있는 바이트(앞 요청과 함께 온 다음 요청의 앞부분)부터 본다 */
+    size_t total = *len;
+    if (total > size - 1) {
+        return HEAD_ERROR;
+    }
+    buf[total] = '\0';
+    if (strstr(buf, "\r\n\r\n") != NULL) {
+        return HEAD_OK;
+    }
 
     for (;;) {
         /* 남은 자리. 마지막 한 바이트는 '\0' 자리로 남긴다 */
@@ -114,6 +120,10 @@ int read_request_head(int fd, char *buf, size_t size, size_t *len)
             if (errno == EINTR) {
                 /* 시그널로 중단됐을 뿐이므로 다시 읽는다 */
                 continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* 읽기 제한 시간이 지났다 */
+                return HEAD_TIMEOUT;
             }
             perror("read");
             return HEAD_ERROR;
