@@ -3,6 +3,8 @@
 
 #include "proxy.h"
 
+#include "cache.h"
+
 #include "http.h"
 #include "net.h"
 #include "response.h"
@@ -38,6 +40,7 @@ int load_config(const char *path, struct proxy_config *cfg)
     }
 
     cfg->route_count = 0;
+    cfg->cache_count = 0;
     char line[LINE_SIZE];
     int line_no = 0;
     while (fgets(line, sizeof(line), fp) != NULL) {
@@ -46,6 +49,19 @@ int load_config(const char *path, struct proxy_config *cfg)
         /* strtok은 줄을 공백으로 나눈 칸을 하나씩 돌려준다. 첫 칸이 없으면 빈 줄 */
         char *token = strtok(line, " \t\r\n");
         if (token == NULL || token[0] == '#') {
+            continue;
+        }
+        /* "cache 접두사": 그 접두사로 시작하는 경로의 응답을 캐시에 저장한다 */
+        if (strcmp(token, "cache") == 0) {
+            token = strtok(NULL, " \t\r\n");
+            if (token == NULL || token[0] != '/' || strlen(token) >= PREFIX_SIZE || cfg->cache_count == MAX_CACHE_PREFIXES) {
+                fprintf(stderr, "%s %d번째 줄: cache 뒤에는 '/'로 시작하는 접두사가 와야 하고, %d개까지입니다\n", path, line_no,
+                        MAX_CACHE_PREFIXES);
+                fclose(fp);
+                return -1;
+            }
+            snprintf(cfg->cache_prefixes[cfg->cache_count], PREFIX_SIZE, "%s", token);
+            cfg->cache_count++;
             continue;
         }
         if (token[0] != '/' || strlen(token) >= PREFIX_SIZE || cfg->route_count == MAX_ROUTES) {
@@ -82,6 +98,16 @@ int load_config(const char *path, struct proxy_config *cfg)
         cfg->route_count++;
     }
     fclose(fp);
+    return 0;
+}
+
+int is_cache_path(const struct proxy_config *cfg, const char *target)
+{
+    for (int i = 0; i < cfg->cache_count; i++) {
+        if (strncmp(target, cfg->cache_prefixes[i], strlen(cfg->cache_prefixes[i])) == 0) {
+            return 1;
+        }
+    }
     return 0;
 }
 
@@ -251,21 +277,6 @@ static int relay_bytes(int from, int to, size_t len)
     return 0;
 }
 
-/* from이 닫힐 때(read가 0)까지 읽어 to에 그대로 쓴다. 옮긴 바이트 수를 돌려준다 */
-static size_t relay_until_close(int from, int to)
-{
-    char buf[RELAY_BUF_SIZE];
-    size_t total = 0;
-    for (;;) {
-        ssize_t n = read(from, buf, sizeof(buf));
-        if (n <= 0 || write_all(to, buf, (size_t)n) == -1) {
-            break;
-        }
-        total += (size_t)n;
-    }
-    return total;
-}
-
 /*
  * 백엔드 응답의 헤더(head, 길이 head_len: 상태 줄부터 빈 줄까지)를 클라이언트에게 쓴다.
  * 백엔드는 "Connection: close"로 응답하지만 클라이언트와의 연결은 유지할 것이므로,
@@ -290,36 +301,102 @@ static int write_head_keep_alive(int client_fd, const char *head, size_t head_le
 }
 
 /*
- * 백엔드의 응답을 클라이언트에게 옮긴다. 백엔드가 연결을 닫을 때까지가 응답 하나다.
+ * 응답의 앞부분(data, 길이 len: 헤더 전체와 그 뒤에 이어진 본문)을 클라이언트에게 쓴다. data는 '\0'으로 끝나야 한다.
  * keep_alive가 1이고 응답에 Content-Length가 있으면 Connection 헤더를 keep-alive로 바꿔 보내고 1을 돌려준다.
  *   (Content-Length가 없는 응답은 클라이언트가 "연결이 닫힘"으로만 끝을 알 수 있으므로 유지할 수 없다.)
- * 그 밖에는 받은 그대로 옮기고 0을 돌려준다. *sent에는 옮긴 바이트 수가 들어간다.
+ * 그 밖에는 받은 그대로 쓰고 0을 돌려준다. 쓰지 못하면 -1.
  */
-static int relay_response(int backend_fd, int client_fd, int keep_alive, size_t *sent)
+static int write_response(int client_fd, const char *data, size_t len, int keep_alive)
+{
+    char value[HEADER_VALUE_SIZE];
+    const char *blank = strstr(data, "\r\n\r\n");
+    if (keep_alive && blank != NULL && get_header(data, "Content-Length", value, sizeof(value)) == 0) {
+        size_t head_len = (size_t)(blank + 4 - data);
+        /* 헤더는 Connection 줄을 바꿔서, 헤더 뒤에 이어진 본문은 그대로 쓴다 */
+        if (write_head_keep_alive(client_fd, data, head_len) == -1 ||
+            write_all(client_fd, data + head_len, len - head_len) == -1) {
+            return -1;
+        }
+        return 1;
+    }
+    return write_all(client_fd, data, len) == -1 ? -1 : 0;
+}
+
+/* 캐시에 넣을 사본을 모으는 곳. 응답을 클라이언트에게 옮기면서 같은 바이트를 data에 이어 붙인다 */
+struct copy_buf {
+    char *data;   /* CACHE_OBJECT_MAX + 1바이트 */
+    size_t len;
+    int too_large; /* 응답이 CACHE_OBJECT_MAX보다 커서 모으기를 그만뒀다 */
+};
+
+static void copy_append(struct copy_buf *copy, const char *bytes, size_t n)
+{
+    if (copy == NULL || copy->too_large) {
+        return;
+    }
+    if (copy->len + n > CACHE_OBJECT_MAX) {
+        copy->too_large = 1;
+        return;
+    }
+    memcpy(copy->data + copy->len, bytes, n);
+    copy->len += n;
+}
+
+/*
+ * 백엔드의 응답을 클라이언트에게 옮긴다. 백엔드가 연결을 닫을 때까지가 응답 하나다.
+ * 클라이언트와의 연결을 유지해도 되면 1, 아니면 0을 돌려준다. *sent에는 옮긴 바이트 수가 들어간다.
+ * copy가 NULL이 아니면 옮긴 바이트를 copy에도 모은다 (캐시에 넣을 사본).
+ */
+static int relay_response(int backend_fd, int client_fd, int keep_alive, size_t *sent, struct copy_buf *copy)
 {
     char head[REQ_BUF_SIZE];
     size_t len = 0;
     int result = read_request_head(backend_fd, head, sizeof(head), &len);
     *sent = len;
+    copy_append(copy, head, len);
 
     int kept = 0;
-    char value[HEADER_VALUE_SIZE];
-    const char *blank = result == HEAD_OK ? strstr(head, "\r\n\r\n") : NULL;
-    if (keep_alive && blank != NULL && get_header(head, "Content-Length", value, sizeof(value)) == 0) {
-        size_t head_len = (size_t)(blank + 4 - head);
-        /* 헤더는 Connection 줄을 바꿔서, 헤더와 함께 들어온 본문 앞부분은 그대로 쓴다 */
-        if (write_head_keep_alive(client_fd, head, head_len) == -1 ||
-            write_all(client_fd, head + head_len, len - head_len) == -1) {
+    if (result == HEAD_OK) {
+        kept = write_response(client_fd, head, len, keep_alive);
+        if (kept == -1) {
             return 0;
         }
-        kept = 1;
     } else if (len > 0 && write_all(client_fd, head, len) == -1) {
         return 0;
     }
     if (result == HEAD_OK || result == HEAD_TOO_LARGE) {
-        *sent += relay_until_close(backend_fd, client_fd);
+        char buf[RELAY_BUF_SIZE];
+        for (;;) {
+            ssize_t n = read(backend_fd, buf, sizeof(buf));
+            if (n <= 0 || write_all(client_fd, buf, (size_t)n) == -1) {
+                break;
+            }
+            *sent += (size_t)n;
+            copy_append(copy, buf, (size_t)n);
+        }
     }
     return kept;
+}
+
+/*
+ * 모은 사본(data, len)을 캐시에 넣어도 되는 응답인지 본다: 상태 코드가 200이고,
+ * Content-Length가 있으면 본문이 그 길이만큼 다 온 응답만 넣는다 (도중에 끊긴 응답을 넣지 않는다).
+ */
+static int is_cacheable(const char *data, size_t len)
+{
+    if (strncmp(data, "HTTP/1.", 7) != 0 || strncmp(data + 8, " 200 ", 5) != 0) {
+        return 0;
+    }
+    const char *blank = strstr(data, "\r\n\r\n");
+    if (blank == NULL) {
+        return 0;
+    }
+    char value[HEADER_VALUE_SIZE];
+    size_t content_length;
+    if (get_header(data, "Content-Length", value, sizeof(value)) == 0 && parse_content_length(value, &content_length) == 0) {
+        return len - (size_t)(blank + 4 - data) == content_length;
+    }
+    return 1;
 }
 
 /*
@@ -338,6 +415,41 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
         return 0;
     }
     int keep_alive = wants_keep_alive(buf, strcmp(req.version, "HTTP/1.1") == 0);
+
+    /*
+     * 이 요청의 본문 길이와, buf에서 이 요청이 차지하는 범위를 구한다.
+     * buf에 본문보다 더 들어와 있으면 그 뒤는 다음 요청의 앞부분이므로 서버에 보내지 않는다.
+     */
+    char value[HEADER_VALUE_SIZE];
+    size_t content_length = 0;
+    if (get_header(buf, "Content-Length", value, sizeof(value)) != 0 || parse_content_length(value, &content_length) != 0) {
+        content_length = 0;
+    }
+    size_t head_len = (size_t)(strstr(buf, "\r\n\r\n") + 4 - buf);
+    size_t body_received = len - head_len;
+    if (body_received > content_length) {
+        body_received = content_length;
+    }
+    *used = head_len + body_received;
+
+    /*
+     * 0) 캐시를 본다. 설정 파일의 "cache 접두사"에 맞는 경로의 GET 요청만 대상이고,
+     * 키는 요청 대상 전체("?" 뒤의 쿼리 포함)다.
+     * 사본이 있으면(hit) 서버를 고르지도 연결하지도 않고 사본을 클라이언트에게 쓴다.
+     */
+    int use_cache = strcmp(req.method, "GET") == 0 && is_cache_path(cfg, req.target);
+    char *cached;
+    size_t cached_len;
+    if (use_cache && cache_get(req.target, &cached, &cached_len)) {
+        printf("[Cache] HIT %s → 사본 %zu바이트를 보냄 (백엔드에 연결하지 않음)\n", req.target, cached_len);
+        free_request(&req);
+        int kept = write_response(client_fd, cached, cached_len, keep_alive);
+        free(cached);
+        return kept == 1;
+    }
+    if (use_cache) {
+        printf("[Cache] MISS %s\n", req.target);
+    }
 
     /*
      * 1) 보낼 서버를 정한다.
@@ -406,22 +518,6 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
     }
 
     /*
-     * 이 요청의 본문 길이와, buf에서 이 요청이 차지하는 범위를 구한다.
-     * buf에 본문보다 더 들어와 있으면 그 뒤는 다음 요청의 앞부분이므로 서버에 보내지 않는다.
-     */
-    char value[HEADER_VALUE_SIZE];
-    size_t content_length = 0;
-    if (get_header(buf, "Content-Length", value, sizeof(value)) != 0 || parse_content_length(value, &content_length) != 0) {
-        content_length = 0;
-    }
-    size_t head_len = (size_t)(strstr(buf, "\r\n\r\n") + 4 - buf);
-    size_t body_received = len - head_len;
-    if (body_received > content_length) {
-        body_received = content_length;
-    }
-    *used = head_len + body_received;
-
-    /*
      * 3) 요청을 서버에 쓴다. 요청 줄만 새로 만들고, 둘째 줄부터(헤더, 빈 줄, 본문 앞부분)는 받은 그대로 이어서 쓴다.
      * 버전을 HTTP/1.0으로 하고 "Connection: close"를 넣는다. 프록시는 서버가 연결을 닫는 것으로 응답의 끝을 알기 때문이다.
      * Forward Proxy에서는 요청 대상도 바꾼다. 서버는 절대 URL이 아니라 경로를 받아야 한다.
@@ -432,9 +528,9 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
     const char *second_line = strstr(buf, "\r\n") + 2;
     int written = first_len < (int)sizeof(first) && write_all(backend_fd, first, (size_t)first_len) == 0 &&
                   write_all(backend_fd, second_line, *used - (size_t)(second_line - buf)) == 0;
-    free_request(&req);
     if (!written) {
         perror("write (서버)");
+        free_request(&req);
         close(backend_fd);
         send_error(client_fd, 502);
         return 0;
@@ -442,19 +538,42 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
 
     /* 4) 본문이 더 남았으면(Content-Length - 이미 받은 본문) 클라이언트에서 읽어 서버로 옮긴다 */
     if (content_length > body_received && relay_bytes(client_fd, backend_fd, content_length - body_received) == -1) {
+        free_request(&req);
         close(backend_fd);
         return 0;
     }
 
-    /* 5) 서버가 연결을 닫을 때까지 응답을 읽어 클라이언트에게 쓴다. 아무것도 오지 않았으면 502 */
+    /*
+     * 5) 서버가 연결을 닫을 때까지 응답을 읽어 클라이언트에게 쓴다. 아무것도 오지 않았으면 502.
+     * 캐시 대상 요청이면 옮기는 바이트를 copy에도 모아 둔다 (캐시에 넣을 사본). 모으는 동안에는 캐시의 잠금을 잡지 않는다.
+     */
+    struct copy_buf copy = {NULL, 0, 0};
+    if (use_cache) {
+        copy.data = malloc(CACHE_OBJECT_MAX + 1);
+    }
     size_t sent;
-    int kept = relay_response(backend_fd, client_fd, keep_alive, &sent);
+    int kept = relay_response(backend_fd, client_fd, keep_alive, &sent, copy.data != NULL ? &copy : NULL);
     close(backend_fd);
     if (sent == 0) {
+        free(copy.data);
+        free_request(&req);
         send_error(client_fd, 502);
         return 0;
     }
     printf("응답 %zu바이트를 클라이언트에게 전달\n", sent);
+
+    /* 6) 200 응답이고 사본 하나의 크기 제한 안이면 캐시에 저장한다. 그 밖의 응답(404, 502, 큰 응답)은 저장하지 않는다 */
+    if (copy.data != NULL) {
+        copy.data[copy.len] = '\0';
+        if (copy.too_large) {
+            printf("[Cache] 저장 안 함 %s (응답이 %d바이트보다 큼)\n", req.target, CACHE_OBJECT_MAX);
+        } else if (is_cacheable(copy.data, copy.len)) {
+            cache_put(req.target, copy.data, copy.len);
+            printf("[Cache] 저장 %s %zu바이트 (%d초 동안 씀)\n", req.target, copy.len, CACHE_TTL_MS / 1000);
+        }
+        free(copy.data);
+    }
+    free_request(&req);
     return kept;
 }
 

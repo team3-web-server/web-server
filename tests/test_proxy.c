@@ -1,11 +1,18 @@
 /*
- * proxy.c 단위 테스트: 설정 파일 읽기, 경로로 규칙 찾기, 라운드로빈, 절대 URL 나누기.
+ * proxy.c, cache.c 단위 테스트: 설정 파일 읽기, 경로로 규칙 찾기, 라운드로빈, 절대 URL 나누기, 응답 캐시.
  * 각 테스트는 실패하면 FAIL 줄을 출력하고, 실패가 하나라도 있으면 종료 코드 1.
  */
+/* nanosleep, mkstemp를 쓰려면 헤더보다 먼저 있어야 한다 (-std=c11) */
+#define _POSIX_C_SOURCE 200809L
+
 #include "proxy.h"
 
+#include "cache.h"
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -21,6 +28,13 @@ static int failures = 0;
     } while (0)
 
 /* 내용이 text인 임시 설정 파일을 만들고 load_config의 결과를 돌려준다 */
+/* 2밀리초 쉰다. 캐시가 사본마다 "마지막으로 쓴 시각"(밀리초)을 다르게 기록하게 한다 */
+static void short_sleep(void)
+{
+    struct timespec ts = {0, 2000000};
+    nanosleep(&ts, NULL);
+}
+
 static int load_text(const char *text, struct proxy_config *cfg)
 {
     char path[] = "/tmp/test_proxy_conf_XXXXXX";
@@ -100,6 +114,63 @@ int main(void)
     CHECK(parse_absolute_url("http:///a", &dest, &path) == -1, "parse_absolute_url: 주소가 비었으면 -1");
     CHECK(parse_absolute_url("http://example.com:abc/", &dest, &path) == -1, "parse_absolute_url: 포트가 숫자가 아니면 -1");
     CHECK(parse_absolute_url("http://example.com:99999/", &dest, &path) == -1, "parse_absolute_url: 포트가 범위 밖이면 -1");
+
+    /* 설정 파일의 "cache 접두사" 줄 */
+    CHECK(load_text("/static/ 127.0.0.1:8002\ncache /static/\n", &cfg) == 0 && cfg.cache_count == 1 && cfg.route_count == 1,
+          "load_config: cache 줄은 규칙으로 세지 않고 캐시 접두사로 읽는다");
+    CHECK(is_cache_path(&cfg, "/static/a.css?v=1") == 1, "is_cache_path: /static/a.css?v=1 → 캐시 대상");
+    CHECK(is_cache_path(&cfg, "/api/users") == 0, "is_cache_path: /api/users → 캐시 대상 아님");
+    CHECK(is_cache_path(&cfg, "http://127.0.0.1:8002/static/a.css") == 0, "is_cache_path: 절대 URL(Forward 요청) → 캐시 대상 아님");
+    CHECK(load_text("cache static/\n", &cfg) == -1, "load_config: cache 뒤의 접두사가 /로 시작하지 않으면 -1");
+
+    /* 응답 캐시 */
+    char *got;
+    size_t got_len;
+    cache_clear();
+    CHECK(cache_get("/a", &got, &got_len) == 0, "cache_get: 넣은 적 없는 키는 miss");
+    cache_put("/a", "hello", 5);
+    CHECK(cache_get("/a", &got, &got_len) == 1 && got_len == 5 && memcmp(got, "hello", 5) == 0, "cache_get: 넣은 사본을 그대로 돌려준다 (hit)");
+    free(got);
+    CHECK(cache_get("/a?x=1", &got, &got_len) == 0, "cache_get: 쿼리가 다르면 다른 키");
+    cache_put("/a", "bye", 3);
+    CHECK(cache_get("/a", &got, &got_len) == 1 && got_len == 3 && memcmp(got, "bye", 3) == 0, "cache_put: 같은 키로 다시 넣으면 사본이 바뀐다");
+    free(got);
+
+    /* 크기 제한: 사본 하나 100 KiB, 전체 1 MiB */
+    char *big = malloc(CACHE_OBJECT_MAX + 1);
+    memset(big, 'x', CACHE_OBJECT_MAX + 1);
+    cache_put("/big", big, CACHE_OBJECT_MAX + 1);
+    CHECK(cache_get("/big", &got, &got_len) == 0, "cache_put: 100 KiB보다 큰 사본은 저장하지 않는다");
+
+    /* 100 KiB짜리 사본은 10개까지 들어간다(1,024,000바이트). 11번째를 넣으면 가장 오래 쓰지 않은 사본이 버려진다 */
+    cache_clear();
+    char key[16];
+    for (int i = 0; i < 10; i++) {
+        snprintf(key, sizeof(key), "/k%d", i);
+        cache_put(key, big, CACHE_OBJECT_MAX);
+        short_sleep();
+    }
+    int hit0 = cache_get("/k0", &got, &got_len); /* /k0을 방금 썼으므로, 가장 오래 쓰지 않은 사본은 /k1이 된다 */
+    if (hit0) {
+        free(got);
+    }
+    short_sleep();
+    cache_put("/k10", big, CACHE_OBJECT_MAX);
+    int has0 = cache_get("/k0", &got, &got_len);
+    if (has0) {
+        free(got);
+    }
+    int has1 = cache_get("/k1", &got, &got_len);
+    if (has1) {
+        free(got);
+    }
+    int has10 = cache_get("/k10", &got, &got_len);
+    if (has10) {
+        free(got);
+    }
+    CHECK(hit0 == 1 && has0 == 1 && has1 == 0 && has10 == 1, "cache_put: 전체 1 MiB를 넘으면 가장 오래 쓰지 않은 사본(/k1)을 버린다 (LRU)");
+    free(big);
+    cache_clear();
 
     if (failures > 0) {
         printf("단위 테스트 실패 %d개\n", failures);
