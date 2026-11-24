@@ -8,6 +8,7 @@
  *   action=status : 프록시와 백엔드들이 살아 있는지
  *   action=stop   : port=8001 처럼 백엔드 하나를 끝낸다
  *   action=start  : 끝낸 백엔드를 다시 실행한다
+ *   action=multi  : 요청 세 개를 연결마다 하나씩(keep=0) 또는 연결 하나로(keep=1, keep-alive) 보낸다
  *   action=fds    : 웹 서버 프로세스(부모와 자식)의 fd 표를 /proc 에서 읽는다 (연결 전, 연결된 때, 끝난 뒤)
  *   action=log    : name(proxy, tcpdump 또는 백엔드 포트)의 프로세스가 출력한 로그 파일을 from 바이트 위치부터 읽는다
  *   action=conf   : 데모용 라우팅 규칙 파일(demo/lab/proxy.conf) 내용
@@ -714,6 +715,137 @@ static void action_fds(int port, int cgi)
     printf(",\"bytes\":%zu}\n", total);
 }
 
+
+/* ---------- action=multi: 요청 세 개를 연결마다 하나씩(HTTP/1.0) 또는 연결 하나로(HTTP/1.1 keep-alive) 보낸다 ---------- */
+
+/*
+ * fd에서 응답 하나를 읽는다. 헤더의 Content-Length만큼 본문을 읽으면 멈춘다 (연결이 닫히기를 기다리지 않는다).
+ * 상태 줄을 first에 복사하고, 읽은 바이트 수를 돌려준다. 실패하면 -1.
+ */
+static long read_one_response(int fd, char *first, size_t first_size)
+{
+    char buf[RESPONSE_MAX];
+    size_t total = 0;
+    char *blank = NULL;
+    while (blank == NULL && total < sizeof(buf) - 1) {
+        ssize_t n = read(fd, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0) {
+            return -1;
+        }
+        total += (size_t)n;
+        buf[total] = '\0';
+        blank = strstr(buf, "\r\n\r\n");
+    }
+    if (blank == NULL) {
+        return -1;
+    }
+    size_t line_len = strcspn(buf, "\r\n");
+    snprintf(first, first_size, "%.*s", (int)line_len, buf);
+
+    long content_length = 0;
+    const char *field = strstr(buf, "Content-Length:");
+    if (field != NULL && field < blank) {
+        content_length = strtol(field + strlen("Content-Length:"), NULL, 10);
+    }
+    size_t want = (size_t)(blank + 4 - buf) + (size_t)content_length;
+    while (total < want) {
+        char rest[4096];
+        size_t left = want - total;
+        ssize_t n = read(fd, rest, left < sizeof(rest) ? left : sizeof(rest));
+        if (n <= 0) {
+            return -1;
+        }
+        total += (size_t)n;
+    }
+    return (long)total;
+}
+
+static double elapsed_ms(const struct timespec *from)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)(now.tv_sec - from->tv_sec) * 1000.0 + (double)(now.tv_nsec - from->tv_nsec) / 1000000.0;
+}
+
+static int local_port(int fd)
+{
+    struct sockaddr_in local;
+    socklen_t local_len = sizeof(local);
+    if (getsockname(fd, (struct sockaddr *)&local, &local_len) == -1) {
+        return 0;
+    }
+    return ntohs(local.sin_port);
+}
+
+/*
+ * keep가 0이면: 요청마다 connect → HTTP/1.0 요청 → 응답 → 서버가 닫음 (연결 3개)
+ * keep가 1이면: connect 한 번 → HTTP/1.1 요청 세 개를 같은 소켓으로 (마지막 요청에 Connection: close)
+ * 요청마다 이 프로세스 쪽 소켓의 fd와 포트를 함께 돌려준다. 포트가 같으면 같은 연결이다.
+ */
+static void action_multi(int port, int keep)
+{
+    static const char *const paths[] = {"/index.html", "/style.css", "/app.js"};
+    const int count = 3;
+    if (find_backend_root(port) == NULL) {
+        json_error("port는 백엔드 포트여야 합니다");
+        return;
+    }
+    signal(SIGPIPE, SIG_IGN);
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    json_header();
+    printf("{\"ok\":true,\"port\":%d,\"keep\":%s,\"requests\":[", port, keep ? "true" : "false");
+    int fd = -1;
+    int connections = 0;
+    for (int i = 0; i < count; i++) {
+        struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        int connected_now = 0;
+        if (fd == -1) {
+            fd = connect_local(port);
+            if (fd == -1) {
+                printf("],\"error\":\"connect 실패\"}\n");
+                return;
+            }
+            struct timeval timeout = {10, 0};
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+            connections++;
+            connected_now = 1;
+        }
+        char request[256];
+        int request_len;
+        if (keep) {
+            request_len = snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: localhost\r\n%s\r\n", paths[i],
+                                   i == count - 1 ? "Connection: close\r\n" : "");
+        } else {
+            request_len = snprintf(request, sizeof(request), "GET %s HTTP/1.0\r\n\r\n", paths[i]);
+        }
+        int client_fd = fd;
+        int client_port = local_port(fd);
+        char first[128] = "";
+        long bytes = -1;
+        if (write(fd, request, (size_t)request_len) == request_len) {
+            bytes = read_one_response(fd, first, sizeof(first));
+        }
+        double ms = elapsed_ms(&t0);
+        if (!keep || i == count - 1 || bytes == -1) {
+            close(fd);
+            fd = -1;
+        }
+        printf("%s{\"sent\":", i > 0 ? "," : "");
+        json_string(request, (size_t)request_len);
+        printf(",\"status_line\":");
+        json_string(first, strlen(first));
+        printf(",\"bytes\":%ld,\"ms\":%.2f,\"client_fd\":%d,\"client_port\":%d,\"connected_now\":%s}", bytes, ms, client_fd,
+               client_port, connected_now ? "true" : "false");
+        if (bytes == -1) {
+            break;
+        }
+    }
+    printf("],\"connections\":%d,\"total_ms\":%.2f}\n", connections, elapsed_ms(&start));
+}
+
 /* path 파일을 from 바이트 위치부터 최대 max바이트 읽어 {"next":위치,"text":"..."}로 출력한다 */
 static void send_file_part(const char *path, long from, size_t max)
 {
@@ -783,6 +915,13 @@ int main(void)
         } else {
             action_start(port);
         }
+    } else if (strcmp(action, "multi") == 0) {
+        int port = 8004;
+        if (get_param(query, "port", value, sizeof(value)) == 0) {
+            port = (int)strtol(value, NULL, 10);
+        }
+        int keep = get_param(query, "keep", value, sizeof(value)) == 0 && strcmp(value, "1") == 0;
+        action_multi(port, keep);
     } else if (strcmp(action, "fds") == 0) {
         int port = 8004;
         if (get_param(query, "port", value, sizeof(value)) == 0) {

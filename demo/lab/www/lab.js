@@ -148,9 +148,14 @@
           panes: [{ log: 8004 }]
         },
         {
-          key: 'http11', tab: 'HTTP/1.0과 HTTP/1.1', badge: '구현 전', shell: true,
+          key: 'http11', tab: 'HTTP/1.0과 HTTP/1.1', stage: 'direct', port: 8004,
           title: 'HTTP/1.0과 HTTP/1.1: 요청마다 새 연결과 연결 재사용 (keep-alive)',
-          controls: []
+          controls: [
+            { label: 'HTTP/1.0: 요청 세 개 (요청마다 새 연결)', cls: 'plain', run: function () { return runMulti(false); } },
+            { label: 'HTTP/1.1: 요청 세 개 (연결 하나를 유지)', cls: 'primary plain', run: function () { return runMulti(true); } },
+            { hint: '클라이언트 포트가 같으면 같은 연결이다' }
+          ],
+          panes: [{ log: 8004 }, { log: 'tcpdump' }]
         }
       ]
     },
@@ -1107,6 +1112,89 @@
         packets.some(function (p, i) { if (p.len > 0) { firstData = i; return true; } return false; });
         selectPacket(firstData);
       });
+    }).then(refreshStatus);
+  }
+
+  /* ---------- HTTP/1.0과 HTTP/1.1: 요청 세 개를 연결 세 개 또는 연결 하나로 ---------- */
+
+  function runMulti(keep) {
+    setStage('direct', 8004);
+    clearMarks();
+    setChip('client-chip', '', '');
+    setChip('direct-note', '', '');
+    showWhy('');
+    var result;
+    var lines = [];
+    var sent = $('sent');
+    var got = $('received');
+    var dot = $('dot');
+    var from = [POS.client[0] + 80, POS.client[1]];
+    var to = [POS.direct[0] - 105, POS.direct[1]];
+    return pullLogs().then(function () {
+      return call({ action: 'multi', port: 8004, keep: keep ? 1 : 0 });
+    }).then(function (r) {
+      if (!r.ok || r.error) { throw new Error(r.error || '요청을 보내지 못했다'); }
+      result = r;
+      sent.className = '';
+      sent.textContent = '';
+      got.className = '';
+      got.textContent = '';
+      $('res-meta').textContent = '→ 8004 · 연결 ' + r.connections + '개 · ' + r.total_ms + 'ms';
+      /* 요청을 하나씩, 실제로 보낸 순서대로 그린다. 새 연결을 맺은 요청은 선이 새로 그어진다 */
+      var chain = Promise.resolve();
+      r.requests.forEach(function (q, i) {
+        chain = chain.then(function () {
+          var first = q.sent.split('\r\n')[0];
+          sent.appendChild(el('span', 'first', first + '\n'));
+          sent.appendChild(el('span', q.connected_now ? 'len' : 'cut',
+            '  ' + (q.connected_now ? '새 연결 (connect)' : '앞 요청과 같은 연결') + ' · 클라이언트 포트 ' + q.client_port + ' · fd ' + q.client_fd + '\n'));
+          if (q.connected_now) {
+            $('edge-direct').classList.remove('active', 'res', 'err');
+            return sleep(180);
+          }
+          return null;
+        }).then(function () {
+          dotClass(dot, '');
+          markEdge('edge-direct');
+          return moveDot(dot, from, to, 260);
+        }).then(function () {
+          var ok = /^HTTP\/1\.\d 2/.test(q.status_line);
+          dotClass(dot, ok ? 'res' : 'err');
+          markEdge('edge-direct', ok ? 'res' : 'err');
+          got.appendChild(el('span', ok ? 'status-ok' : 'status-bad', q.status_line || '응답 없음'));
+          got.appendChild(el('span', 'len', '  ' + q.bytes + '바이트 · ' + q.ms + 'ms\n'));
+          return moveDot(dot, to, from, 260);
+        }).then(function () {
+          dotClass(dot, 'hidden');
+          setChip('client-chip', '요청 ' + (i + 1) + ' / ' + r.requests.length, 'ok');
+        });
+      });
+      return chain;
+    }).then(function () {
+      /* 캡처가 켜져 있으면 이 요청들의 패킷 수를 센다 (tcpdump가 줄을 쓰는 데 시간이 조금 걸린다) */
+      function poll(tries) {
+        return sleep(250).then(pullLogs).then(function (fresh) {
+          lines = lines.concat(fresh.tcpdump || []);
+          var fins = lines.filter(function (l) { return /Flags \[F/.test(l); }).length;
+          return !up.tcpdump || fins >= 2 * result.connections || tries <= 1 ? null : poll(tries - 1);
+        });
+      }
+      return poll(6);
+    }).then(function () {
+      var ports = {};
+      result.requests.forEach(function (q) { ports[q.client_port] = true; });
+      var packets = lines.map(parsePacket).filter(function (p) { return p && (ports[p.sport] || ports[p.dport]); });
+      var syn = packets.filter(function (p) { return p.flags === 'S'; }).length;
+      var summary = '연결 ' + result.connections + '개 · ' + result.total_ms + 'ms';
+      var text = keep
+        ? '요청 세 개가 연결 하나(같은 클라이언트 포트)로 갔다. 웹 서버 로그에 "이 연결의 2번째 요청", "3번째 요청"이 찍힌다.'
+        : '요청마다 connect를 새로 했다. 클라이언트 포트가 요청마다 다르고, 웹 서버는 요청마다 자식 프로세스를 새로 만들었다.';
+      if (packets.length) {
+        summary += ' · 패킷 ' + packets.length + '개';
+        text += ' 커널이 주고받은 패킷은 ' + packets.length + '개이고, 그중 연결을 맺는 SYN이 ' + syn + '개다.';
+      }
+      setChip('direct-note', summary, keep ? 'ok' : '');
+      showWhy(text);
     }).then(refreshStatus);
   }
 

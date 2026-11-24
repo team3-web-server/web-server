@@ -6,7 +6,7 @@
 | 주제 | 장면 |
 |---|---|
 | 소켓과 TCP | Socket과 fd, TCP Handshake와 레이어 |
-| HTTP | HTTP GET, 상태 코드(13개), POST, HTTP/1.0과 HTTP/1.1(구현 전) |
+| HTTP | HTTP GET, 상태 코드(13개), POST, HTTP/1.0과 HTTP/1.1 |
 | 동적 요청과 동시성 | 정적과 동적 (CGI), fork 있음과 없음 |
 | Reverse Proxy | Reverse Proxy, Round-Robin, 가중치 Round-Robin(구현 전), 502 Bad Gateway, Health Check(구현 전) |
 | Forward Proxy | Forward Proxy, 허용 목록 |
@@ -72,7 +72,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
 | 파일 | 내용 |
 |---|---|
 | `demo/lab/run.sh` | 빌드(`make lab`)하고 프로세스 일곱 개를 띄운다 |
-| `demo/lab/cgi/lab.c` | CGI 프로그램. `action=send`, `fds`, `status`, `stop`, `start`, `log`, `conf` |
+| `demo/lab/cgi/lab.c` | CGI 프로그램. `action=send`, `multi`, `fds`, `status`, `stop`, `start`, `log`, `conf` |
 | `demo/lab/www/index.html`, `lab.css`, `lab.js` | 페이지. 장면의 글과 버튼은 `lab.js`의 `GROUPS`에 있다 |
 
 ## 주의
