@@ -41,8 +41,11 @@ start lab ./build/server 8000 demo/lab/www
 sleep 0.5
 for name in 8001 8002 8003 proxy lab; do
   if ! kill -0 "$(cat "$run/$name.pid")" 2>/dev/null; then
-    echo "실행 실패: $name (포트가 이미 쓰이고 있는지 확인: $run/$name.log)"
+    echo "실행 실패: $name ($run/$name.log 의 마지막 줄)"
     tail -n 3 "$run/$name.log"
+    echo
+    echo "\"Address already in use\"가 보이면 전에 띄운 서버가 남아 있는 것이다. 아래 명령으로 끝낸 뒤 다시 실행한다."
+    echo "  pkill -f build/server; pkill -f build/proxy"
     exit 1
   fi
 done
