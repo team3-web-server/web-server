@@ -93,8 +93,6 @@
         {
           key: 'fd', tab: 'Socket과 fd', stage: 'direct', port: 8004,
           title: 'Socket과 fd: 듣기 소켓 하나, 연결마다 연결 소켓 하나',
-          problem: '프로세스는 네트워크 카드를 직접 다루지 못한다. 커널에게 소켓을 만들어 달라고 하고, 커널이 돌려준 번호(fd)로 read, write 한다. 그런데 클라이언트가 여러 명이면 소켓 하나로는 누구와 주고받는 바이트인지 구분할 수 없다.',
-          solution: '웹 서버 프로세스는 socket, bind, listen으로 듣기 소켓(fd 3)을 하나 만든다. 클라이언트가 연결하면 accept가 그 연결만을 위한 연결 소켓(fd 4)을 새로 돌려준다. fork 뒤에 부모는 연결 소켓을, 자식은 듣기 소켓을 닫는다. 아래 fd 표는 커널의 /proc/프로세스 번호/fd 를 읽은 값이다.',
           controls: [
             { label: '연결 하나 만들고 fd 표 읽기', cls: 'primary plain', run: function () { return runFds(false); } },
             { toggle: 8004 },
@@ -105,8 +103,6 @@
         {
           key: 'tcp', tab: 'TCP Handshake와 레이어', badge: '준비 중', shell: true,
           title: 'TCP Handshake와 레이어: HTTP 요청 하나가 TCP, IP에 실려 가는 모습',
-          problem: 'HTTP 요청 글자는 혼자서 상대에게 갈 수 없다. 어느 컴퓨터로 갈지(IP), 그 컴퓨터의 어느 프로세스에게 갈지와 순서·빠짐 확인(TCP)이 필요하다. 또 TCP는 데이터를 보내기 전에 양쪽이 서로 받을 준비가 됐는지 먼저 확인해야 한다.',
-          solution: 'connect를 부르면 커널끼리 SYN → SYN+ACK → ACK 세 패킷을 주고받는다(3-way handshake). 그 뒤 HTTP 요청은 TCP 세그먼트에 담기고, 세그먼트는 IP 패킷에 담겨 나간다. 이 패킷들은 커널 안에서 오가므로 프로세스의 로그에는 찍히지 않는다. 실제 패킷을 읽으려면 tcpdump가 필요해서, 캡처한 결과를 읽어 그리는 방식으로 채울 예정이다.',
           controls: []
         }
       ]
@@ -117,8 +113,6 @@
         {
           key: 'get', tab: 'HTTP GET', stage: 'direct', port: 8004,
           title: 'HTTP GET: 정해진 글자 형식으로 파일을 달라고 한다',
-          problem: 'TCP 연결은 바이트를 순서대로 전달할 뿐이다. 클라이언트가 어떤 파일을 원하는지, 서버가 성공했는지 실패했는지를 서로 알아볼 약속이 없다.',
-          solution: 'HTTP가 그 약속이다. 클라이언트 프로세스는 "GET 경로 버전" 한 줄과 헤더, 빈 줄을 보낸다. 웹 서버 프로세스는 경로를 정적 파일 폴더(www) 안의 파일 경로로 바꿔 파일을 읽고, 상태 줄 + 헤더(Content-Type, Content-Length) + 빈 줄 + 본문 순서로 응답한다.',
           controls: [
             { label: 'GET /index.html', cls: 'primary', run: get(8004, '/index.html') },
             { label: 'GET /style.css', cls: 'primary', run: get(8004, '/style.css') },
@@ -131,8 +125,6 @@
         {
           key: 'status', tab: '상태 코드', stage: 'direct', port: 8004,
           title: '상태 코드: 요청이 어떻게 됐는지 숫자 세 자리로 알려 준다',
-          problem: '요청이 실패했을 때 서버가 그냥 연결을 닫으면, 클라이언트는 파일이 없는 것인지, 요청 형식이 틀린 것인지, 서버 쪽 문제인지 구분할 수 없다.',
-          solution: '응답의 첫 줄(상태 줄)에 숫자를 넣는다. 2xx는 성공, 4xx는 클라이언트가 보낸 요청의 문제, 5xx는 서버 쪽 문제다. 아래 버튼은 지금 코드가 보낼 수 있는 상태 코드 13개를 실제로 그 응답이 나오는 요청을 보내서 받는다.',
           controls: STATUS_CASES.map(function (c) {
             var cls = 'code ' + (c.code < 300 ? 'c2' : c.code < 500 ? 'c4' : 'c5');
             return { label: String(c.code), cls: cls, run: function () { return send(c.to, c.raw, { why: c.why }); } };
@@ -142,8 +134,6 @@
         {
           key: 'post', tab: 'POST', stage: 'direct', port: 8004,
           title: 'POST: 요청에 본문을 실어 서버로 데이터를 보낸다',
-          problem: 'GET은 요청 줄과 헤더뿐이라 서버에 보낼 데이터를 경로 뒤(?name=값)에만 적을 수 있다. 길이에 한계가 있고, 주소에 그대로 드러난다.',
-          solution: 'POST는 빈 줄 뒤에 본문을 붙여 보낸다. TCP에는 "여기까지가 본문"이라는 표시가 없으므로, 클라이언트가 Content-Length 헤더로 본문의 바이트 수를 알려 주고 웹 서버 프로세스는 그만큼만 읽는다. 읽은 본문은 CGI 프로세스의 표준 입력으로 넘어간다.',
           controls: [
             { input: 'post-body', value: 'msg=hello&from=lab', label: '보낼 본문' },
             { label: 'POST /cgi-bin/echo', cls: 'primary', run: function () { return send(8004, http('POST', '/cgi-bin/echo', { body: $('post-body').value })); } },
@@ -154,8 +144,6 @@
         {
           key: 'http11', tab: 'HTTP/1.0과 HTTP/1.1', badge: '구현 전', shell: true,
           title: 'HTTP/1.0과 HTTP/1.1: 요청마다 새 연결과 연결 재사용 (keep-alive)',
-          problem: 'HTTP/1.0은 요청 하나마다 TCP 연결을 새로 맺고, 응답이 끝나면 닫는다. 페이지 하나에 HTML, CSS, JS, 이미지가 있으면 3-way handshake와 연결 종료를 파일 개수만큼 반복한다.',
-          solution: 'HTTP/1.1은 응답 뒤에도 연결을 닫지 않고 같은 연결로 다음 요청을 받는다(keep-alive). 그러려면 서버가 응답의 끝을 연결 종료가 아니라 Content-Length로 알려 줘야 한다. 지금 웹 서버는 응답마다 연결을 닫는다(Connection: close). keep-alive를 구현하면 요청 세 개의 연결 수와 fd를 두 방식으로 나란히 보여 준다.',
           controls: []
         }
       ]
@@ -166,8 +154,6 @@
         {
           key: 'cgi', tab: '정적과 동적 (CGI)', stage: 'direct', port: 8004,
           title: '정적과 동적 (CGI): 파일을 읽어 보내기와 프로그램을 실행해 보내기',
-          problem: '정적 파일 서빙은 디스크에 있는 파일을 그대로 보낸다. 요청에 따라 내용이 달라지는 응답(입력 값을 계산한 결과 등)은 미리 파일로 만들어 둘 수 없다.',
-          solution: '경로가 /cgi-bin/으로 시작하면 웹 서버의 자식 프로세스가 fork를 한 번 더 하고, 새 프로세스가 exec로 CGI 프로그램이 된다. 요청 정보는 환경 변수(REQUEST_METHOD, QUERY_STRING)와 표준 입력(파이프)으로 넘기고, CGI 프로세스의 표준 출력(파이프)을 읽어 응답 본문으로 보낸다. fd 표에서 CGI 프로세스의 0번, 1번이 pipe인 것을 확인한다.',
           controls: [
             { label: '정적: GET /index.html', cls: 'primary', run: get(8004, '/index.html') },
             { label: '동적: GET /cgi-bin/hello?name=somang', cls: 'primary', run: get(8004, '/cgi-bin/hello?name=somang') },
@@ -178,8 +164,6 @@
         {
           key: 'fork', tab: 'fork 있음과 없음', stage: 'direct', port: 8004,
           title: 'fork 있음과 없음: 느린 요청 하나가 다른 클라이언트를 기다리게 하는가',
-          problem: '웹 서버 프로세스가 연결을 직접 처리하면, 그 처리가 끝날 때까지 accept로 돌아가지 못한다. 3초 걸리는 요청이 처리되는 동안 뒤에 온 클라이언트는 금방 끝날 요청이어도 3초를 기다린다.',
-          solution: 'accept 직후 fork해서 연결 처리를 자식 프로세스에게 맡기고, 부모는 바로 accept로 돌아간다. 아래 버튼은 3초 걸리는 요청(/cgi-bin/slow)을 먼저 보내고 0.4초 뒤에 빠른 요청(/index.html)을 보낸다. 8004는 지금 코드 그대로, 8005는 같은 코드를 fork 없이 빌드(-DNO_FORK)한 웹 서버다. 표시되는 시간은 클라이언트가 실제로 잰 값이다.',
           controls: [
             { label: 'fork 있음 (8004): 느린 요청 + 빠른 요청', cls: 'primary plain', run: function () { return runRace(8004); } },
             { label: 'fork 없음 (8005): 느린 요청 + 빠른 요청', cls: 'plain', run: function () { return runRace(8005); } }
@@ -194,8 +178,6 @@
         {
           key: 'reverse', tab: 'Reverse Proxy', stage: 'proxy',
           title: 'Reverse Proxy: 어디로 보낼지 프록시가 정한다',
-          problem: '서버가 여러 대로 나뉘면(API 서버, 정적 파일 서버, CGI 서버) 클라이언트가 서버마다 다른 주소와 포트를 알아야 한다. 서버를 늘리거나 옮길 때마다 모든 클라이언트가 바뀐 주소를 알아야 한다.',
-          solution: '클라이언트는 프록시 주소(8080) 하나만 안다. 요청 줄에는 경로만 적는다. 프록시 프로세스가 proxy.conf에서 경로의 접두사에 맞는 규칙을 찾아 그 백엔드에 connect하고, 요청과 응답 바이트를 그대로 전달한다. 맞는 규칙이 없으면 404를 보낸다.',
           controls: [
             { label: 'GET /api/', cls: 'primary', run: get(8080, '/api/') },
             { label: 'GET /static/', cls: 'primary', run: get(8080, '/static/') },
@@ -208,8 +190,6 @@
         {
           key: 'rr', tab: 'Round-Robin', stage: 'proxy',
           title: 'Round-Robin: 백엔드가 둘이면 번갈아 고른다',
-          problem: '같은 일을 하는 백엔드를 두 대로 늘려도, 프록시가 항상 첫 번째 백엔드로만 보내면 한 대에만 요청이 몰리고 다른 한 대는 논다.',
-          solution: '/api/ 규칙에는 백엔드가 8001, 8003 두 개다. 프록시 프로세스는 규칙마다 순번(next)을 기억하고, 요청이 올 때마다 순번의 백엔드를 고른 뒤 순번을 1 올린다. 백엔드 칸의 숫자는 이 페이지를 연 뒤 그 백엔드가 받은 요청 수다.',
           controls: [
             { label: 'GET /api/ 한 번', cls: 'primary', run: get(8080, '/api/') },
             { label: 'GET /api/ 여섯 번', cls: 'primary', run: function () { return sendMany(6); } },
@@ -220,15 +200,11 @@
         {
           key: 'wrr', tab: '가중치 Round-Robin', badge: '구현 전', shell: true,
           title: '가중치 Round-Robin: 성능이 좋은 백엔드에 더 많이 보낸다',
-          problem: 'Round-Robin은 모든 백엔드에 같은 수의 요청을 보낸다. 백엔드의 성능이 다르면(한 대가 다른 한 대의 세 배를 처리할 수 있으면) 느린 백엔드가 먼저 밀린다.',
-          solution: 'proxy.conf의 백엔드마다 가중치를 적는다(예: 8001은 3, 8003은 1). 프록시 프로세스는 요청 네 개 중 세 개를 8001로, 한 개를 8003으로 보낸다. 구현하면 Round-Robin 장면처럼 요청 수가 3:1로 쌓이는 것을 보여 준다.',
           controls: []
         },
         {
           key: 'bad', tab: '502 Bad Gateway', stage: 'proxy',
           title: '502 Bad Gateway: 고른 백엔드가 꺼져 있을 때',
-          problem: '백엔드 프로세스가 죽으면 프록시의 connect가 실패한다. 프록시가 아무 응답도 하지 않으면 클라이언트는 응답을 계속 기다린다.',
-          solution: '프록시 프로세스는 connect가 실패하면 직접 502 Bad Gateway 응답을 만들어 클라이언트에게 보낸다. 지금 프록시는 꺼진 백엔드를 미리 알지 못해서, 순번이 오면 꺼진 백엔드를 그대로 고른다. 그래서 /api/ 요청이 한 번은 성공하고 한 번은 502가 된다(이 문제를 푸는 것이 Health Check).',
           controls: [
             { toggle: 8001 }, { toggle: 8003 }, { toggle: 8002 },
             { sep: true },
@@ -240,8 +216,6 @@
         {
           key: 'health', tab: 'Health Check', badge: '구현 전', shell: true,
           title: 'Health Check: 꺼진 백엔드를 미리 알아내 순번에서 뺀다',
-          problem: '지금 프록시는 백엔드가 꺼졌는지 모른다. 순번이 꺼진 백엔드에 오면 그 요청은 502가 된다. 백엔드 두 대 중 한 대가 꺼지면 요청의 절반이 실패한다.',
-          solution: '프록시 프로세스가 일정 시간마다 각 백엔드에 connect를 시도해 살아 있는지 기록한다. 백엔드를 고를 때 꺼진 것으로 기록된 백엔드는 건너뛴다. 백엔드가 다시 켜지면 다음 확인 때 순번에 돌아온다. 구현하면 백엔드를 꺼도 502 없이 남은 백엔드로만 가는 것을 보여 준다.',
           controls: []
         }
       ]
@@ -252,8 +226,6 @@
         {
           key: 'forward', tab: 'Forward Proxy', stage: 'proxy',
           title: 'Forward Proxy: 어디로 보낼지 클라이언트가 정한다',
-          problem: '사내 네트워크처럼 클라이언트가 바깥 서버에 직접 연결할 수 없는 곳이 있다. 바깥으로 나가는 요청을 한 곳으로 모아야 누가 어디로 나가는지 기록하고 통제할 수 있다.',
-          solution: '클라이언트는 프록시에 연결하고, 요청 줄에 서버 주소까지 통째로 적는다(GET http://주소:포트/경로). 프록시 프로세스는 proxy.conf의 라우팅 규칙을 보지 않고, 요청 줄에서 주소와 포트를 꺼내 그 서버에 connect한다. 서버에게 보낼 때는 요청 줄을 "GET /경로 HTTP/1.0"으로 고쳐 쓴다. 서버가 보는 상대는 클라이언트가 아니라 프록시다.',
           controls: [
             { label: 'GET http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
             { label: 'GET http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
@@ -266,8 +238,6 @@
         {
           key: 'allow', tab: '허용 목록', stage: 'proxy',
           title: '허용 목록: 허용한 서버로만 나가게 한다',
-          problem: 'Forward Proxy가 클라이언트가 적은 주소로 무조건 보내면, 사내 컴퓨터가 아무 사이트에나 접속할 수 있다. 회사가 허용한 사이트로만 나가게 하려면 모든 컴퓨터를 하나씩 설정해야 한다.',
-          solution: '바깥으로 나가는 길이 프록시 하나뿐이므로, 프록시에서 한 번만 검사하면 된다. proxy.conf의 "allow 주소:포트" 줄이 허용 목록이다. 프록시 프로세스는 요청 줄에서 꺼낸 주소가 목록에 없으면 그 서버에 connect하지 않고 클라이언트에게 403 Forbidden을 보낸다. 로그에 "허용 목록에 없음"이 찍힌다.',
           controls: [
             { label: '허용: http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
             { label: '허용: http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
@@ -284,22 +254,16 @@
         {
           key: 'xff', tab: 'X-Forwarded-For', badge: '구현 전', shell: true,
           title: 'X-Forwarded-For: 백엔드에게 원래 클라이언트의 주소를 알려 준다',
-          problem: '백엔드에 connect하는 것은 프록시 프로세스다. 그래서 백엔드의 accept가 돌려주는 상대 주소는 항상 프록시의 주소다. 백엔드는 실제 클라이언트가 누구인지 알 수 없어 접속 기록이나 차단을 할 수 없다.',
-          solution: '프록시 프로세스가 요청을 백엔드에 전달할 때 헤더 한 줄(X-Forwarded-For: 클라이언트 IP)을 덧붙인다. 백엔드는 이 헤더를 읽어 원래 클라이언트의 주소를 안다. 구현하면 백엔드 로그에 이 헤더가 찍히는 것을 보여 준다.',
           controls: []
         },
         {
           key: 'cache', tab: 'Response Caching', badge: '구현 전', shell: true,
           title: 'Response Caching: 같은 요청은 백엔드에 다시 묻지 않는다',
-          problem: '같은 경로의 요청이 반복돼도 프록시는 매번 백엔드에 connect해서 같은 응답을 다시 받아 온다. 백엔드는 같은 일을 반복하고, 클라이언트는 매번 그 시간을 기다린다.',
-          solution: '프록시 프로세스가 GET 요청의 응답을 경로별로 메모리에 저장해 둔다. 같은 경로의 요청이 다시 오면 백엔드에 연결하지 않고 저장한 응답을 바로 보낸다. 저장한 응답은 정해진 시간이 지나면 버린다. 구현하면 두 번째 요청에서 점이 백엔드까지 가지 않고 프록시에서 돌아오는 것과 걸린 시간을 보여 준다.',
           controls: []
         },
         {
           key: 'statuspage', tab: '/status', badge: '구현 전', shell: true,
           title: '/status: 프록시가 자기 상태를 응답으로 알려 준다',
-          problem: '프록시가 지금까지 요청을 몇 개 받았는지, 어느 백엔드로 몇 번 보냈는지, 어느 백엔드가 꺼져 있는지는 프록시 프로세스의 메모리 안에만 있다. 밖에서 보려면 로그를 직접 세어야 한다.',
-          solution: '프록시 프로세스가 /status 경로의 요청을 백엔드로 보내지 않고 직접 응답한다. 응답 본문에 받은 요청 수, 백엔드별 전달 횟수, 백엔드 상태를 적는다. 구현하면 버튼 하나로 그 응답을 받아 보여 준다.',
           controls: []
         }
       ]
@@ -347,8 +311,6 @@
     $('scene-title').textContent = scene.title;
     $('scene-badge').hidden = !scene.badge;
     $('scene-badge').textContent = scene.badge === '준비 중' ? '준비 중' : '구현 전: 코드를 구현하면 채운다';
-    $('scene-problem').textContent = scene.problem;
-    $('scene-solution').textContent = scene.solution;
     $('why').hidden = true;
     $('main').className = scene.shell ? 'shell' : '';
 
