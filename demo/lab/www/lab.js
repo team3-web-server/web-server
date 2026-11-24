@@ -279,11 +279,11 @@
       scenes: [
         {
           key: 'pkeep', tab: 'keep-alive', stage: 'proxy',
-          title: 'keep-alive: 프록시는 클라이언트 쪽 연결만 유지하고, 백엔드에는 요청마다 새로 연결한다',
+          title: 'keep-alive: 프록시는 클라이언트와의 연결도, 백엔드와의 연결도 닫지 않고 다시 쓴다',
           controls: [
             { label: 'HTTP/1.0: 요청 세 개 (요청마다 새 연결)', cls: 'plain', run: function () { return runMultiProxy(false); } },
             { label: 'HTTP/1.1: 요청 세 개 (연결 하나를 유지)', cls: 'primary plain', run: function () { return runMultiProxy(true); } },
-            { hint: '클라이언트 포트가 같으면 같은 연결이다' }
+            { hint: '클라이언트 포트가 같으면 같은 연결이다. 백엔드와의 연결은 4초 안에 다시 누르면 보관한 것을 다시 쓴다' }
           ],
           panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
         },
@@ -440,6 +440,7 @@
   function logClass(line) {
     if (line.indexOf('[Reverse]') === 0) { return /\((404|503)\)/.test(line) ? 'bad' : 'reverse'; }
     if (line.indexOf('[Failover]') === 0) { return 'bad'; }
+    if (line.indexOf('[Pool]') === 0) { return line.indexOf('다시 씀') > 0 || line.indexOf('보관 (') > 0 ? 'good' : (line.indexOf('이미 닫혀') > 0 ? 'bad' : 'reverse'); }
     if (line.indexOf('[Cache] HIT') === 0) { return 'good'; }
     if (line.indexOf('[Cache]') === 0) { return 'reverse'; }
     if (line.indexOf('[Health]') === 0) { return line.indexOf('연결 실패') > 0 ? 'bad' : 'good'; }
@@ -1321,6 +1322,12 @@
         if (/^\[Failover\] /.test(next)) { failed.push(d.port); return; }
         d.failed = failed;
         failed = [];
+        /* 이 요청이 백엔드와의 연결을 새로 맺었는지, 보관한 연결을 다시 썼는지: 다음 [Reverse] 줄 전의 [Pool] 줄을 본다 */
+        var rest = all.slice(i + 1);
+        var stop = rest.findIndex(function (x) { return /^\[(Reverse|Forward)\] /.test(x); });
+        var mine = stop === -1 ? rest : rest.slice(0, stop);
+        d.reused = mine.some(function (x) { return x.indexOf('[Pool]') === 0 && x.indexOf('보관한 연결을 다시 씀') > 0; }) &&
+          !mine.some(function (x) { return x.indexOf('[Pool]') === 0 && x.indexOf('새로 connect') > 0; });
         decisions.push(d);
       });
       sent.className = '';
@@ -1337,6 +1344,10 @@
             '  ' + (q.connected_now ? '새 연결 (connect)' : '앞 요청과 같은 연결') + ' · 클라이언트 포트 ' + q.client_port + ' · fd ' + q.client_fd + '\n'));
           got.appendChild(el('span', ok ? 'status-ok' : 'status-bad', q.status_line || '응답 없음'));
           got.appendChild(el('span', 'len', '  ' + q.bytes + '바이트 · ' + q.ms + 'ms\n'));
+          if (decisions[i] && decisions[i].port) {
+            got.appendChild(el('span', decisions[i].reused ? 'status-ok' : 'cut',
+              '  프록시 → 백엔드 ' + decisions[i].port + ': ' + (decisions[i].reused ? '보관한 연결을 다시 씀 (connect 없음)' : '새로 connect') + '\n'));
+          }
           return animateProxy({ status: ok ? 200 : 502, status_line: q.status_line || 'HTTP/1.1 502 응답 없음' }, decisions[i] || null, true);
         }).then(function () {
           setChip('client-chip', '요청 ' + (i + 1) + ' / ' + result.requests.length, 'ok');
@@ -1351,8 +1362,8 @@
       return chain;
     }).then(function () {
       showWhy(keep
-        ? '클라이언트 프로세스는 connect를 한 번만 했다(클라이언트 포트가 같다). 프록시 프로세스는 요청마다 백엔드를 다시 고르고 새로 연결했다. 프록시 로그의 "클라이언트와의 연결을 유지하고 다음 요청을 기다립니다"를 확인한다.'
-        : '클라이언트 프로세스가 요청마다 connect를 새로 했다(클라이언트 포트가 요청마다 다르다). 프록시 프로세스는 응답 뒤 클라이언트와의 연결을 닫았다.');
+        ? '클라이언트 프로세스는 connect를 한 번만 했다(클라이언트 포트가 같다). 프록시 프로세스는 요청마다 백엔드를 다시 고르고, 그 백엔드의 보관함에 쉬는 연결이 있으면 connect 없이 그것을 다시 썼다. 프록시 로그의 [Pool] 줄과, 백엔드 로그의 "이 연결의 2번째 요청"을 확인한다.'
+        : '클라이언트 프로세스가 요청마다 connect를 새로 했다(클라이언트 포트가 요청마다 다르다). 프록시 프로세스는 응답 뒤 클라이언트와의 연결을 닫았다. 백엔드와의 연결은 클라이언트와 상관없이 보관함에서 다시 쓴다.');
     }).then(refreshStatus);
   }
 

@@ -410,7 +410,50 @@ static void action_status(void)
     printf("]}\n");
 }
 
-/* action=stop: 백엔드 프로세스에 SIGTERM을 보낸다 */
+/*
+ * 부모가 parent인 프로세스(백엔드가 연결마다 fork한 자식 프로세스)를 모두 끝낸다.
+ * /proc/<번호>/stat 의 넷째 칸이 부모의 프로세스 번호다. 둘째 칸(프로그램 이름)은 괄호 안이고 공백이 있을 수 있어서 마지막 ')' 뒤부터 읽는다.
+ */
+static void kill_children(long parent)
+{
+    DIR *dir = opendir("/proc");
+    if (dir == NULL) {
+        return;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        char *end;
+        long pid = strtol(entry->d_name, &end, 10);
+        if (*end != '\0' || pid <= 0) {
+            continue;
+        }
+        char path[64];
+        char line[512];
+        snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
+        FILE *fp = fopen(path, "r");
+        if (fp == NULL) {
+            continue;
+        }
+        long ppid = -1;
+        if (fgets(line, sizeof(line), fp) != NULL) {
+            const char *close_paren = strrchr(line, ')');
+            if (close_paren != NULL) {
+                sscanf(close_paren + 1, " %*c %ld", &ppid);
+            }
+        }
+        fclose(fp);
+        if (ppid == parent) {
+            kill((pid_t)pid, SIGKILL);
+        }
+    }
+    closedir(dir);
+}
+
+/*
+ * action=stop: 백엔드 프로세스에 SIGTERM을 보내고, 그 자식 프로세스들도 끝낸다.
+ * 백엔드는 SIGTERM을 받아도 맡고 있던 연결의 자식 프로세스가 끝나기를 기다린다. 프록시가 보관한 연결(keep-alive)이 있으면
+ * 그 자식 프로세스가 최대 5초 더 남아 요청을 처리하므로, "백엔드가 꺼졌다"는 장면이 되도록 함께 끝낸다.
+ */
 static void action_stop(int port)
 {
     if (find_backend_root(port) == NULL) {
@@ -425,6 +468,7 @@ static void action_stop(int port)
         return;
     }
     kill((pid_t)pid, SIGTERM);
+    kill_children(pid);
     int down = wait_backend(port, 0);
     json_header();
     printf("{\"ok\":true,\"port\":%d,\"up\":%s}\n", port, down ? "false" : "true");

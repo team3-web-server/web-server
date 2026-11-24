@@ -9,6 +9,7 @@
 
 #include "cache.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -38,6 +39,24 @@ static atomic_llong fake_time;
 static long long fake_now(void)
 {
     return fake_time;
+}
+
+/* fd가 열려 있으면 1, 닫혔으면 0 */
+static int is_open(int fd)
+{
+    return fcntl(fd, F_GETFD) != -1;
+}
+
+/* 보관함 테스트에 쓸 열린 fd 하나를 만든다 (파이프의 읽는 쪽. 쓰는 쪽은 바로 닫는다) */
+static int new_fd(void)
+{
+    int fds[2];
+    if (pipe(fds) == -1) {
+        perror("pipe");
+        exit(1);
+    }
+    close(fds[1]);
+    return fds[0];
 }
 
 /* key가 캐시에 있으면(hit) 1. 받은 복사본은 바로 해제한다 */
@@ -314,6 +333,68 @@ int main(void)
 
     free(big);
     cache_clear();
+
+    /*
+     * 연결 보관함 (프록시와 백엔드 사이의 keep-alive). 시계는 캐시 테스트와 같은 가짜 시계를 쓴다.
+     */
+    pool_clock = fake_now;
+    struct backend be;
+    memset(&be, 0, sizeof(be));
+    snprintf(be.host, sizeof(be.host), "127.0.0.1");
+    be.port = 8001;
+    be.alive = 1;
+
+    fake_time = 0;
+    CHECK(pool_take(&be) == -1, "pool_take: 보관한 연결이 없으면 -1");
+    int fd_a = new_fd();
+    CHECK(pool_put(&be, fd_a) == 1, "pool_put: 넣으면 보관 중인 수(1)를 돌려준다");
+    CHECK(pool_take(&be) == fd_a && is_open(fd_a), "pool_take: 넣은 연결을 그대로 꺼낸다 (닫지 않는다)");
+    CHECK(pool_take(&be) == -1, "pool_take: 꺼낸 연결은 보관함에서 빠진다 (두 번 꺼낼 수 없다)");
+
+    /* 가장 나중에 넣은 연결부터 꺼낸다 */
+    int fd_b = new_fd();
+    pool_put(&be, fd_a);
+    pool_put(&be, fd_b);
+    CHECK(pool_take(&be) == fd_b && pool_take(&be) == fd_a, "pool_take: 나중에 넣은 연결부터 꺼낸다");
+
+    /* 4초 넘게 쉰 연결: 3.999초까지는 꺼내고, 4초부터는 닫고 꺼내지 않는다 */
+    fake_time = 0;
+    pool_put(&be, fd_a);
+    fake_time = POOL_IDLE_MS - 1;
+    CHECK(pool_take(&be) == fd_a, "pool_take: 쉰 시간이 POOL_IDLE_MS보다 짧으면 꺼낸다");
+    pool_put(&be, fd_a); /* 보관한 시각은 POOL_IDLE_MS - 1 */
+    fake_time = POOL_IDLE_MS - 1 + POOL_IDLE_MS;
+    CHECK(pool_take(&be) == -1 && !is_open(fd_a), "pool_take: POOL_IDLE_MS만큼 쉰 연결은 꺼내지 않고 닫는다");
+
+    /* 오래 쉰 연결과 새 연결이 섞여 있으면 새 연결만 꺼낸다 */
+    fd_a = new_fd();
+    fake_time = 0;
+    pool_put(&be, fd_a);
+    fake_time = POOL_IDLE_MS;
+    pool_put(&be, fd_b);
+    int took = pool_take(&be);
+    CHECK(took == fd_b && is_open(fd_a), "pool_take: 덜 쉰 연결이 있으면 그것을 꺼내고, 오래 쉰 연결은 아직 건드리지 않는다");
+    CHECK(pool_take(&be) == -1 && !is_open(fd_a), "pool_take: 남은 것이 오래 쉰 연결뿐이면 닫고 -1");
+
+    /* 보관함은 POOL_MAX개까지 */
+    int pool_fds[POOL_MAX + 1];
+    int put_ok = 1;
+    for (int i = 0; i < POOL_MAX; i++) {
+        pool_fds[i] = new_fd();
+        put_ok = put_ok && pool_put(&be, pool_fds[i]) == i + 1;
+    }
+    pool_fds[POOL_MAX] = new_fd();
+    CHECK(put_ok && pool_put(&be, pool_fds[POOL_MAX]) == 0 && !is_open(pool_fds[POOL_MAX]),
+          "pool_put: 보관함이 꽉 차면 넣지 않고 닫는다");
+
+    /* 백엔드가 죽음으로 표시되면 보관한 연결을 모두 닫는다 */
+    mark_backend_dead(&be);
+    int all_closed = 1;
+    for (int i = 0; i < POOL_MAX; i++) {
+        all_closed = all_closed && !is_open(pool_fds[i]);
+    }
+    CHECK(be.alive == 0 && all_closed && pool_take(&be) == -1, "mark_backend_dead: 보관한 연결을 모두 닫고 보관함을 비운다");
+    close(fd_b);
 
     if (failures > 0) {
         printf("단위 테스트 실패 %d개\n", failures);
