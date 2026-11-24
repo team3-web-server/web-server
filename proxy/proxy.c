@@ -327,7 +327,15 @@ struct copy_buf {
     char *data;   /* CACHE_OBJECT_MAX + 1바이트 */
     size_t len;
     int too_large; /* 응답이 CACHE_OBJECT_MAX보다 커서 모으기를 그만뒀다 */
+    int cut;       /* 응답을 끝까지 옮기지 못했다 (백엔드에서 읽기 오류, 또는 클라이언트가 먼저 끊음). 사본이 잘려 있다 */
 };
+
+static void copy_cut(struct copy_buf *copy)
+{
+    if (copy != NULL) {
+        copy->cut = 1;
+    }
+}
 
 static void copy_append(struct copy_buf *copy, const char *bytes, size_t n)
 {
@@ -359,16 +367,22 @@ static int relay_response(int backend_fd, int client_fd, int keep_alive, size_t 
     if (result == HEAD_OK) {
         kept = write_response(client_fd, head, len, keep_alive);
         if (kept == -1) {
+            copy_cut(copy);
             return 0;
         }
     } else if (len > 0 && write_all(client_fd, head, len) == -1) {
+        copy_cut(copy);
         return 0;
     }
     if (result == HEAD_OK || result == HEAD_TOO_LARGE) {
         char buf[RELAY_BUF_SIZE];
         for (;;) {
             ssize_t n = read(backend_fd, buf, sizeof(buf));
-            if (n <= 0 || write_all(client_fd, buf, (size_t)n) == -1) {
+            if (n == 0) {
+                break; /* 백엔드가 연결을 닫았다: 응답의 끝 */
+            }
+            if (n < 0 || write_all(client_fd, buf, (size_t)n) == -1) {
+                copy_cut(copy);
                 break;
             }
             *sent += (size_t)n;
@@ -381,10 +395,12 @@ static int relay_response(int backend_fd, int client_fd, int keep_alive, size_t 
 /*
  * 모은 사본(data, len)을 캐시에 넣어도 되는 응답인지 본다: 상태 코드가 200이고,
  * Content-Length가 있으면 본문이 그 길이만큼 다 온 응답만 넣는다 (도중에 끊긴 응답을 넣지 않는다).
+ * Content-Length가 없는 응답이 도중에 끊긴 경우는 여기서 알 수 없어서, 옮기는 쪽이 copy_buf의 cut에 적어 둔다.
  */
 static int is_cacheable(const char *data, size_t len)
 {
-    if (strncmp(data, "HTTP/1.", 7) != 0 || strncmp(data + 8, " 200 ", 5) != 0) {
+    /* 상태 줄 "HTTP/1.x 200 "은 13바이트다. 그보다 짧으면 data + 8부터 읽을 수 없다 */
+    if (len < 13 || strncmp(data, "HTTP/1.", 7) != 0 || strncmp(data + 8, " 200 ", 5) != 0) {
         return 0;
     }
     const char *blank = strstr(data, "\r\n\r\n");
@@ -547,7 +563,7 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
      * 5) 서버가 연결을 닫을 때까지 응답을 읽어 클라이언트에게 쓴다. 아무것도 오지 않았으면 502.
      * 캐시 대상 요청이면 옮기는 바이트를 copy에도 모아 둔다 (캐시에 넣을 사본). 모으는 동안에는 캐시의 잠금을 잡지 않는다.
      */
-    struct copy_buf copy = {NULL, 0, 0};
+    struct copy_buf copy = {NULL, 0, 0, 0};
     if (use_cache) {
         copy.data = malloc(CACHE_OBJECT_MAX + 1);
     }
@@ -567,7 +583,7 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
         copy.data[copy.len] = '\0';
         if (copy.too_large) {
             printf("[Cache] 저장 안 함 %s (응답이 %d바이트보다 큼)\n", req.target, CACHE_OBJECT_MAX);
-        } else if (is_cacheable(copy.data, copy.len)) {
+        } else if (!copy.cut && is_cacheable(copy.data, copy.len)) {
             cache_put(req.target, copy.data, copy.len);
             printf("[Cache] 저장 %s %zu바이트 (%d초 동안 씀)\n", req.target, copy.len, CACHE_TTL_MS / 1000);
         }

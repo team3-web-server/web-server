@@ -14,7 +14,8 @@ struct cache_entry {
     char key[CACHE_KEY_SIZE];
     char *data;
     size_t len;
-    long long last_used; /* 마지막으로 쓴 시각(밀리초): 저장한 때와 hit한 때 */
+    long long saved_at;  /* 저장한 시각(밀리초): 만료(TTL)를 판단한다. hit해도 바뀌지 않는다 */
+    long long last_used; /* 마지막으로 쓴 시각(밀리초): 버릴 사본(LRU)을 고른다 */
 };
 
 static struct cache_entry entries[CACHE_SLOTS];
@@ -78,7 +79,7 @@ int cache_get(const char *key, char **data, size_t *len)
     pthread_mutex_lock(&cache_lock);
     long long now = now_ms();
     struct cache_entry *entry = find_entry(key);
-    if (entry != NULL && now - entry->last_used <= CACHE_TTL_MS) {
+    if (entry != NULL && now - entry->saved_at <= CACHE_TTL_MS) {
         /* 잠금을 푼 뒤에는 이 사본이 버려질 수 있으므로, 잠금 안에서 복사해 둔다 */
         char *copy = malloc(entry->len + 1);
         if (copy != NULL) {
@@ -122,7 +123,8 @@ void cache_put(const char *key, const char *data, size_t len)
     snprintf(entry->key, sizeof(entry->key), "%s", key);
     entry->data = copy;
     entry->len = len;
-    entry->last_used = now_ms();
+    entry->saved_at = now_ms();
+    entry->last_used = entry->saved_at;
     total_size += len;
     pthread_mutex_unlock(&cache_lock);
 }
