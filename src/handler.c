@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
@@ -175,6 +177,16 @@ void handle_connection(int conn_fd, const char *root)
     /* 다음 요청을 기다리는 read가 IDLE_TIMEOUT_SEC초 넘게 멈춰 있으면 -1(EAGAIN)로 돌아오게 한다 */
     struct timeval timeout = {IDLE_TIMEOUT_SEC, 0};
     if (setsockopt(conn_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1) {
+        perror("setsockopt");
+    }
+
+    /*
+     * 응답은 헤더와 본문을 write 두 번으로 보낸다. 커널은 작은 데이터를 모아 보내려고(Nagle 알고리즘) 앞 write의 ACK가
+     * 올 때까지 둘째 write를 보내지 않고, 클라이언트 쪽 커널은 ACK를 약 40ms 늦춰 보낸다. 유지된 연결의 두 번째 요청부터
+     * 응답이 40ms씩 늦어지므로, TCP_NODELAY로 write한 것을 바로 보내게 한다.
+     */
+    int on = 1;
+    if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == -1) {
         perror("setsockopt");
     }
 
