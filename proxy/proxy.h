@@ -11,6 +11,7 @@
 #define MAX_ROUTES 8
 #define MAX_BACKENDS 8
 #define PREFIX_SIZE 64
+#define MAX_CACHE_PREFIXES 8
 #define HOST_SIZE 64
 #define HEALTH_INTERVAL_SEC 2 /* 헬스 체크 스레드가 모든 백엔드를 한 번 검사한 뒤 쉬는 시간 */
 
@@ -32,14 +33,20 @@ struct route {
 struct proxy_config {
     struct route routes[MAX_ROUTES];
     int route_count;
+    char cache_prefixes[MAX_CACHE_PREFIXES][PREFIX_SIZE]; /* 응답을 캐시에 저장할 경로의 접두사 ("cache 접두사" 줄) */
+    int cache_count;
 };
 
 /*
  * 설정 파일을 읽어 cfg를 채운다. 한 줄에 규칙 하나: "접두사 주소:포트 [주소:포트 ...]"
  * 예) "/api/ 127.0.0.1:8001 127.0.0.1:8003".  빈 줄과 '#'로 시작하는 줄은 건너뛴다.
+ * "cache 접두사" 줄은 그 접두사로 시작하는 경로의 응답을 캐시에 저장하라는 뜻이다. 예) "cache /static/"
  * 성공하면 0. 파일을 열 수 없거나 형식이 틀리면 원인을 출력하고 -1.
  */
 int load_config(const char *path, struct proxy_config *cfg);
+
+/* 요청 대상이 "cache 접두사" 줄에 적힌 접두사로 시작하면 1, 아니면 0 */
+int is_cache_path(const struct proxy_config *cfg, const char *target);
 
 /* 경로가 어느 규칙의 접두사로 시작하는지 찾는다. 위에 적힌 규칙이 먼저다. 없으면 NULL */
 struct route *match_route(struct proxy_config *cfg, const char *url_path);
