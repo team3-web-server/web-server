@@ -123,6 +123,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid #93b4f8; outline-
 .node.down rect { stroke: var(--down); stroke-dasharray: 6 5; fill: #fdf2f2; }
 .node.down .name { fill: var(--down); }
 .node.ext rect { stroke-dasharray: 6 5; }
+.node.excluded rect { stroke: #d97706; stroke-dasharray: 2 4; }
+.node.excluded .sub { fill: #b45309; }
 .node.hit rect { stroke: var(--res); stroke-width: 4; }
 .node.fail rect { stroke: var(--err); stroke-width: 4; }
 .node.busy rect { stroke: var(--req); stroke-width: 4; }
@@ -195,6 +197,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #93b4f8; outline-
 .term .forward { color: #c4a6ff; font-weight: 700; }
 .term .bad { color: #ff8a80; font-weight: 700; }
 .term .good { color: #6fdc8c; }
+.term .probe { color: #7c8799; font-style: italic; }
 .term .new { background: #1f2a3a; }
 .term.down h3 { background: #4a1d1d; }
 

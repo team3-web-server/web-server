@@ -41,6 +41,17 @@ static void *handle_client(void *arg)
 }
 #endif
 
+/* 헬스 체크 스레드가 실행하는 함수: 모든 백엔드를 검사하고 HEALTH_INTERVAL_SEC초 쉬기를 반복한다 */
+static void *health_loop(void *arg)
+{
+    struct proxy_config *cfg = arg;
+    for (;;) {
+        check_backends(cfg);
+        sleep(HEALTH_INTERVAL_SEC);
+    }
+    return NULL;
+}
+
 int main(int argc, char *argv[])
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -86,6 +97,16 @@ int main(int argc, char *argv[])
         return 1;
     }
     printf("프록시 listen 중: 포트 %d, 설정 파일 %s (끝내려면 Ctrl+C)\n", port, config_path);
+
+    /* 헬스 체크 스레드를 하나 만든다. 요청을 처리하는 스레드들과 따로, 프록시가 끝날 때까지 돈다 */
+    pthread_t health_tid;
+    int health_err = pthread_create(&health_tid, NULL, health_loop, &cfg);
+    if (health_err != 0) {
+        fprintf(stderr, "pthread_create (헬스 체크): %s\n", strerror(health_err));
+        close(fd);
+        return 1;
+    }
+    pthread_detach(health_tid);
 
     for (;;) {
         int client_fd = accept_client(fd);

@@ -64,6 +64,17 @@ int main(void)
     struct route *st = &cfg.routes[1];
     CHECK(pick_backend(st)->port == 8002 && pick_backend(st)->port == 8002, "pick_backend: 백엔드가 하나면 늘 그 백엔드");
 
+    /* 자동 제외: 죽은 백엔드(alive가 0)는 건너뛴다 */
+    CHECK(api->backends[0].alive == 1 && api->backends[1].alive == 1, "load_config: 백엔드는 처음에 살아 있다고 본다");
+    api->backends[1].alive = 0;
+    CHECK(pick_backend(api)->port == 8001 && pick_backend(api)->port == 8001 && pick_backend(api)->port == 8001,
+          "pick_backend: 8003이 죽었으면 8001만 고른다");
+    api->backends[0].alive = 0;
+    CHECK(pick_backend(api) == NULL, "pick_backend: 모두 죽었으면 NULL");
+    api->backends[1].alive = 1;
+    CHECK(pick_backend(api)->port == 8003, "pick_backend: 8003이 살아나면 다시 고른다");
+    api->backends[0].alive = 1;
+
     /* 틀린 설정 */
     CHECK(load_config("/nonexistent/proxy.conf", &cfg) == -1, "load_config: 없는 파일이면 -1");
     CHECK(load_text("api/ 127.0.0.1:8001\n", &cfg) == -1, "load_config: 접두사가 /로 시작하지 않으면 -1");

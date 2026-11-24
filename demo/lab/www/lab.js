@@ -31,6 +31,7 @@
 
   var counts = { 8001: 0, 8003: 0, 8002: 0, 8004: 0 };
   var up = { 8001: true, 8003: true, 8002: true, 8004: true, 8005: true, 8080: true, 8081: true, tcpdump: true };
+  var excluded = {};  /* 포트 → 프록시가 헬스 체크로 제외해 둔 백엔드인가 (프록시 로그의 [Health] 줄에서 읽는다) */
   var logs = {};      /* 이름 → { offset, tail, box } : 지금 화면에 있는 로그 칸 */
   var busy = false;
   var current = null;
@@ -84,7 +85,8 @@
     { code: 431, to: 8004, raw: http('GET', '/', { headers: ['X-Long: {{a9000}}'] }), why: '431 Request Header Fields Too Large: 헤더 한 줄이 9,000바이트다. 요청 줄과 헤더를 받는 버퍼는 8,192바이트다.' },
     { code: 500, to: 8004, raw: http('GET', '/cgi-bin/fail'), why: '500 Internal Server Error: CGI 프로그램 fail이 출력 없이 실패(종료 값 1)로 끝났다. 웹 서버 프로세스가 응답을 만들 수 없다.' },
     { code: 501, to: 8004, raw: http('PUT', '/index.html'), why: '501 Not Implemented: PUT 메서드는 이 웹 서버가 구현하지 않았다. 구현한 메서드는 GET과 POST다.' },
-    { code: 502, to: 8080, raw: http('GET', '/down/'), why: '502 Bad Gateway: 이 요청만 프록시(8080)로 보냈다. 규칙 /down/의 백엔드 127.0.0.1:9에는 서버가 없어서 프록시 프로세스의 connect가 실패했다.' },
+    { code: 502, to: 8080, raw: http('GET', 'http://127.0.0.1:9/'), why: '502 Bad Gateway: 이 요청은 프록시(8080)로 보낸 Forward 요청이다. 목적지 127.0.0.1:9에는 서버가 없어서 프록시 프로세스의 connect가 실패했다.' },
+    { code: 503, to: 8080, raw: http('GET', '/down/'), why: '503 Service Unavailable: 이 요청은 프록시(8080)로 보냈다. 규칙 /down/의 백엔드 127.0.0.1:9는 헬스 체크에서 연결되지 않아 제외돼 있다. 고를 백엔드가 없어서 프록시 프로세스는 connect를 시도하지 않았다.' },
     { code: 505, to: 8004, raw: http('GET', '/', { version: 'HTTP/2.0' }), why: '505 HTTP Version Not Supported: 요청 줄의 버전이 HTTP/2.0이다. 이 웹 서버는 HTTP/1.0과 HTTP/1.1만 읽는다.' }
   ];
 
@@ -224,20 +226,28 @@
           controls: []
         },
         {
-          key: 'bad', tab: '502 Bad Gateway', stage: 'proxy',
-          title: '502 Bad Gateway: 고른 백엔드가 꺼져 있을 때',
+          key: 'bad', tab: '502와 503', stage: 'proxy',
+          title: '502와 503: 고른 백엔드에 연결하지 못했을 때와 고를 백엔드가 없을 때',
           controls: [
-            { toggle: 8001 }, { toggle: 8003 }, { toggle: 8002 },
+            { label: '백엔드 8003을 끄고 바로 GET /api/ 세 번', cls: 'primary plain', run: function () { return runGap(); } },
+            { hint: '헬스 체크가 알아채기 전이라 502' },
             { sep: true },
-            { label: 'GET /api/', cls: 'primary', run: get(8080, '/api/') },
-            { label: 'GET /static/', cls: 'primary', run: get(8080, '/static/') }
+            { toggle: 8003 }, { toggle: 8002 },
+            { label: 'GET /static/', cls: 'primary', run: get(8080, '/static/') },
+            { hint: '8002를 끄고 2초 뒤에 보내면 503' }
           ],
-          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
+          panes: [{ log: 'proxy' }, { log: 8003 }, { log: 8002 }]
         },
         {
-          key: 'health', tab: 'Health Check', badge: '구현 전', shell: true,
+          key: 'health', tab: 'Health Check', stage: 'proxy',
           title: 'Health Check: 꺼진 백엔드를 미리 알아내 순번에서 뺀다',
-          controls: []
+          controls: [
+            { toggle: 8001 }, { toggle: 8003 },
+            { sep: true },
+            { label: 'GET /api/ 네 번', cls: 'primary', run: function () { return sendMany(4); } },
+            { hint: '끄거나 켜고 2초 안에 프록시 로그에 [Health] 줄이 찍힌다' }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
         }
       ]
     },
@@ -438,7 +448,9 @@
   }
 
   function logClass(line) {
-    if (line.indexOf('[Reverse]') === 0) { return line.indexOf('(404)') > 0 ? 'bad' : 'reverse'; }
+    if (line.indexOf('[Reverse]') === 0) { return /\((404|503)\)/.test(line) ? 'bad' : 'reverse'; }
+    if (line.indexOf('[Health]') === 0) { return line.indexOf('연결 실패') > 0 ? 'bad' : 'good'; }
+    if (line.indexOf('헬스 체크 연결') === 0) { return 'probe'; }
     if (line.indexOf('[Forward]') === 0) { return line.indexOf('(403)') > 0 ? 'bad' : 'forward'; }
     if (line.indexOf('connect') === 0 || line.indexOf('getaddrinfo') === 0) { return 'bad'; }
     var m = /^응답: (\d+)/.exec(line);
@@ -446,6 +458,60 @@
     if (line.indexOf('요청 줄:') === 0) { return 'first'; }
     if (/^(socket fd|bind 성공|listen 중|프록시 listen)/.test(line)) { return 'good'; }
     return '';
+  }
+
+  /*
+   * 프록시의 헬스 체크 스레드는 2초마다 백엔드에 connect만 하고 바로 close한다.
+   * 백엔드는 그 연결마다 로그 다섯 줄(연결 수락, 자식에게 맡김, 받은 바이트 수: 0, 헤더 전에 닫힘, 연결을 닫음)을 출력한다.
+   * 다른 줄이 묻히지 않게, 그 다섯 줄을 "헬스 체크 연결 N번" 한 줄로 묶어 보여 준다.
+   */
+  function foldProbes(lines, state) {
+    /* 앞 번에 미뤄 둔 줄(연결의 앞부분만 읽힌 것)을 앞에 붙이고, 이번에도 끝에 걸린 앞부분은 다음으로 미룬다 */
+    lines = (state.held || []).concat(lines);
+    state.held = [];
+    while (lines.length && /^(연결 수락:|자식 프로세스 \d+에게 연결을 맡겼습니다|이 연결의 1번째 요청, 받은 바이트 수: 0$)/.test(lines[lines.length - 1])) {
+      state.held.unshift(lines.pop());
+    }
+    state.probePids = state.probePids || {};
+    var drop = {};
+    var probes = {};
+    lines.forEach(function (line, i) {
+      if (line !== '이 연결의 1번째 요청, 받은 바이트 수: 0' || lines[i + 1] !== '헤더가 끝나기 전에 연결이 닫혔습니다') { return; }
+      var given = /^자식 프로세스 (\d+)에게 연결을 맡겼습니다/.exec(lines[i - 1] || '');
+      drop[i] = drop[i + 1] = true;
+      probes[i + 1] = true;
+      if (given) {
+        drop[i - 1] = true;
+        if (/^연결 수락:/.test(lines[i - 2] || '')) { drop[i - 2] = true; }
+        state.probePids[given[1]] = true;
+      }
+    });
+    /* 헬스 체크 연결을 맡았던 자식 프로세스의 "연결을 닫았습니다" 줄도 뺀다 (다음 번에 읽힐 수도 있다) */
+    lines.forEach(function (line, i) {
+      var closed = /^연결을 닫았습니다 \(자식 프로세스 (\d+)\)$/.exec(line);
+      if (closed && state.probePids[closed[1]]) { drop[i] = true; delete state.probePids[closed[1]]; }
+    });
+    var out = [];
+    var run = 0;
+    lines.forEach(function (line, i) {
+      if (probes[i]) { run += 1; }
+      if (!drop[i]) {
+        if (run) { out.push('헬스 체크 연결 ' + run + '번: 프록시가 connect한 뒤 요청 없이 닫음'); run = 0; }
+        out.push(line);
+      }
+    });
+    if (run) { out.push('헬스 체크 연결 ' + run + '번: 프록시가 connect한 뒤 요청 없이 닫음'); }
+    return out;
+  }
+
+  /* 프록시 로그의 "[Health] 127.0.0.1:8003 연결 실패 …" / "… 연결됨 …" 줄에서, 프록시가 지금 제외해 둔 백엔드를 기억한다 */
+  function noteHealth(lines) {
+    var changed = false;
+    lines.forEach(function (line) {
+      var m = /^\[Health\] 127\.0\.0\.1:(\d+) (연결 실패|연결됨)/.exec(line);
+      if (m) { excluded[m[1]] = m[2] === '연결 실패'; changed = true; }
+    });
+    if (changed) { paintStatus(); }
   }
 
   /* 화면에 있는 로그 칸마다 로그 파일에서 새로 쌓인 줄을 읽어 붙인다. 이름 → 새 줄들 */
@@ -464,8 +530,12 @@
         if (state.first) {
           state.first = false;
           if (lines.length > 1) { lines.shift(); }
+          lines = foldProbes(lines, state);
+          if (name === 'proxy') { noteHealth(lines); }
           lines = lines.slice(-12);
         } else {
+          lines = foldProbes(lines, state);
+          if (name === 'proxy') { noteHealth(lines); }
           Array.prototype.forEach.call(state.box.querySelectorAll('.new'), function (n) { if (lines.length) { n.classList.remove('new'); } });
           fresh[name] = lines;
         }
@@ -499,7 +569,8 @@
       var node = $('node-' + port);
       node.classList.toggle('up', up[port]);
       node.classList.toggle('down', !up[port]);
-      $('cnt-' + port).textContent = up[port] ? '요청 ' + counts[port] : '꺼짐 · 요청 ' + counts[port];
+      node.classList.toggle('excluded', !!excluded[port]);
+      $('cnt-' + port).textContent = (!up[port] ? '꺼짐 · ' : '') + (excluded[port] ? '제외됨 · ' : '') + '요청 ' + counts[port];
     });
     var direct = $('node-direct');
     direct.classList.toggle('up', up[directPort]);
@@ -1269,6 +1340,23 @@
         ? '클라이언트 프로세스는 connect를 한 번만 했다(클라이언트 포트가 같다). 프록시 프로세스는 요청마다 백엔드를 다시 고르고 새로 연결했다. 프록시 로그의 "클라이언트와의 연결을 유지하고 다음 요청을 기다립니다"를 확인한다.'
         : '클라이언트 프로세스가 요청마다 connect를 새로 했다(클라이언트 포트가 요청마다 다르다). 프록시 프로세스는 응답 뒤 클라이언트와의 연결을 닫았다.');
     }).then(refreshStatus);
+  }
+
+  /* ---------- 502: 백엔드 8003을 끈 직후, 헬스 체크가 알아채기 전에 /api/ 요청 세 개를 보낸다 ---------- */
+
+  function runGap() {
+    setStage('proxy');
+    showWhy('');
+    var first = up[8003] ? call({ action: 'stop', port: 8003 }) : Promise.resolve({ ok: true });
+    return first.then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      if (excluded[8003]) { throw new Error('백엔드 8003은 이미 꺼져 있고 프록시가 제외해 두었다. "백엔드 8003 켜기"를 누르고 2초 뒤에 다시 누른다.'); }
+      up[8003] = false;
+      paintStatus();
+      return runMultiProxy(false);
+    }).then(function () {
+      showWhy('백엔드 8003을 끈 직후라 프록시 프로세스는 아직 8003이 죽은 줄 모른다. 8003 차례인 요청은 connect가 실패해 502가 됐다. 2초 안에 헬스 체크 스레드가 알아채면 프록시 로그에 [Health] 줄이 찍히고, 그 뒤로는 8003을 건너뛴다.');
+    });
   }
 
   /* ---------- 시작 ---------- */
