@@ -3,14 +3,14 @@
  * 웹 서버 프로세스(포트 8000)가 /cgi-bin/lab?action=... 요청을 받으면 이 프로그램을 실행한다.
  * 결과는 JSON으로 표준 출력에 쓴다.
  *
- *   action=send   : 이 프로세스가 클라이언트가 되어 프록시(8080)에 요청을 보내고, 보낸 바이트와 받은 응답을 돌려준다
- *                   mode=reverse&path=/api/         → "GET /api/ HTTP/1.1"
- *                   mode=forward&url=http://...     → "GET http://... HTTP/1.1"
- *   action=status : 프록시와 백엔드 세 개가 살아 있는지
+ *   action=send   : 이 프로세스가 클라이언트가 되어 to 포트(기본 8080, 프록시)에 raw의 바이트를 그대로 보내고,
+ *                   보낸 바이트와 받은 응답을 돌려준다. 요청 줄과 헤더는 페이지(lab.js)가 적어 준다
+ *   action=status : 프록시와 백엔드들이 살아 있는지
  *   action=stop   : port=8001 처럼 백엔드 하나를 끝낸다
  *   action=start  : 끝낸 백엔드를 다시 실행한다
- *   action=log    : 프록시가 출력한 로그 파일을 from 바이트 위치부터 읽는다
- *   action=conf   : proxy.conf 내용
+ *   action=fds    : 웹 서버 프로세스(부모와 자식)의 fd 표를 /proc 에서 읽는다 (연결 전, 연결된 때, 끝난 뒤)
+ *   action=log    : name(proxy 또는 백엔드 포트)의 프로세스가 출력한 로그 파일을 from 바이트 위치부터 읽는다
+ *   action=conf   : 데모용 라우팅 규칙 파일(demo/lab/proxy.conf) 내용
  *
  * 실행 위치는 레포의 맨 위 폴더다 (demo/lab/run.sh가 거기서 서버를 띄운다).
  */
@@ -18,6 +18,9 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -35,6 +38,9 @@
 #define PARAM_SIZE 2048
 #define RESPONSE_MAX (256 * 1024) /* 저장해 두는 응답의 최대 크기. 넘는 부분은 바이트 수만 센다 */
 #define BODY_SHOW_MAX 4000        /* 페이지에 보여 줄 본문의 최대 크기 */
+#define SENT_SHOW_MAX 1500        /* 페이지에 보여 줄 보낸 요청의 최대 크기 */
+#define QUERY_MAX 8400            /* QUERY_STRING에서 꺼내는 raw의 최대 크기 (웹 서버의 요청 버퍼가 8192바이트) */
+#define REQUEST_MAX (2 * 1024 * 1024) /* {{xN}}을 펼친 뒤 요청의 최대 크기 */
 #define LOG_CHUNK_MAX (64 * 1024)
 
 /* 데모가 켜고 끌 수 있는 백엔드. 이 목록 밖의 포트는 건드리지 않는다 */
@@ -42,10 +48,14 @@ static const struct {
     int port;
     const char *root;
     const char *route;
+    const char *bin;
 } backends[] = {
-    {8001, "demo/proxy/backend1", "/api/"},
-    {8003, "demo/proxy/backend3", "/api/"},
-    {8002, "demo/proxy/backend2", "/static/"},
+    {8001, "demo/proxy/backend1", "/api/", "build/server"},
+    {8003, "demo/proxy/backend3", "/api/", "build/server"},
+    {8002, "demo/proxy/backend2", "/static/", "build/server"},
+    {8004, "www", "/cgi-bin/", "build/server"}, /* CGI 프로그램 hello, echo가 있는 폴더 */
+    /* 같은 코드를 -DNO_FORK로 빌드한 웹 서버: 연결을 자식 프로세스에게 맡기지 않고 직접 처리한다. 프록시 규칙에는 없다 */
+    {8005, "www", "", "build/server-nofork"},
 };
 #define BACKEND_COUNT ((int)(sizeof(backends) / sizeof(backends[0])))
 
@@ -152,17 +162,6 @@ static int connect_local(int port)
     return fd;
 }
 
-/* 그 포트에서 연결을 받는 프로세스가 있는지 (연결해 보고 바로 닫는다) */
-static int port_is_up(int port)
-{
-    int fd = connect_local(port);
-    if (fd == -1) {
-        return 0;
-    }
-    close(fd);
-    return 1;
-}
-
 /* demo/lab/run/<name>.pid 에 적힌 프로세스 번호. 없으면 -1 */
 static long read_pid(const char *name)
 {
@@ -190,12 +189,24 @@ static const char *find_backend_root(int port)
     return NULL;
 }
 
-/* 0.05초씩 최대 40번(2초) 기다리며 포트 상태가 want(1: 켜짐, 0: 꺼짐)가 되는지 본다 */
-static int wait_port(int port, int want)
+static const char *find_backend_bin(int port)
+{
+    for (int i = 0; i < BACKEND_COUNT; i++) {
+        if (backends[i].port == port) {
+            return backends[i].bin;
+        }
+    }
+    return NULL;
+}
+
+static int backend_is_up(int port);
+
+/* 0.05초씩 최대 40번(2초) 기다리며 백엔드 프로세스의 상태가 want(1: 실행 중, 0: 끝남)가 되는지 본다 */
+static int wait_backend(int port, int want)
 {
     struct timespec ts = {0, 50 * 1000 * 1000};
     for (int i = 0; i < 40; i++) {
-        if (port_is_up(port) == want) {
+        if (backend_is_up(port) == want) {
             return 1;
         }
         nanosleep(&ts, NULL);
@@ -203,74 +214,99 @@ static int wait_port(int port, int want)
     return 0;
 }
 
-/* action=send: 프록시에 요청 하나를 보내고 응답을 끝까지 읽는다 */
+/* 데모가 요청을 보낼 수 있는 포트인지 (프록시와 백엔드들) */
+static int is_allowed_port(int port)
+{
+    return port == PROXY_PORT || find_backend_root(port) != NULL;
+}
+
+/*
+ * raw 안의 "{{xN}}"을 글자 x를 N번 반복한 것으로 바꿔 out에 쓴다. 쓴 바이트 수, 넘치면 -1.
+ * 아주 긴 경로나 헤더(414, 431을 내는 요청)를 주소 창 길이 제한 없이 만들기 위한 표기다.
+ */
+static long expand_repeats(const char *raw, char *out, size_t out_size)
+{
+    size_t n = 0;
+    const char *p = raw;
+    while (*p != '\0') {
+        char c;
+        long count;
+        int used = 0;
+        if (p[0] == '{' && p[1] == '{' && sscanf(p + 2, "%c%ld}}%n", &c, &count, &used) == 2 && used > 0) {
+            if (count < 0 || n + (size_t)count >= out_size) {
+                return -1;
+            }
+            memset(out + n, c, (size_t)count);
+            n += (size_t)count;
+            p += 2 + used;
+            continue;
+        }
+        if (n + 1 >= out_size) {
+            return -1;
+        }
+        out[n++] = *p++;
+    }
+    return (long)n;
+}
+
+/*
+ * action=send: raw에 적힌 바이트를 to 포트에 그대로 보내고, 응답을 끝까지 읽어 돌려준다.
+ * 요청 줄과 헤더를 어떻게 적을지는 페이지(lab.js)가 정한다. 이 프로그램은 적힌 대로 보내기만 한다.
+ */
 static void action_send(const char *query)
 {
-    char mode[32];
-    char target[PARAM_SIZE];
-    char host[PARAM_SIZE];
-    if (get_param(query, "mode", mode, sizeof(mode)) == -1) {
-        json_error("mode가 없습니다");
+    char value[32];
+    int to = PROXY_PORT;
+    if (get_param(query, "to", value, sizeof(value)) == 0) {
+        to = (int)strtol(value, NULL, 10);
+    }
+    if (!is_allowed_port(to)) {
+        json_error("to는 프록시(8080)나 백엔드 포트여야 합니다");
         return;
     }
 
-    if (strcmp(mode, "reverse") == 0) {
-        /* Reverse: 요청 줄에 경로만 적는다. 어느 서버로 갈지는 프록시가 정한다 */
-        if (get_param(query, "path", target, sizeof(target)) == -1 || target[0] != '/') {
-            json_error("path는 /로 시작해야 합니다");
-            return;
-        }
-        snprintf(host, sizeof(host), "localhost:%d", PROXY_PORT);
-    } else if (strcmp(mode, "forward") == 0) {
-        /* Forward: 요청 줄에 절대 URL을 적는다. 어느 서버로 갈지를 클라이언트가 정한다 */
-        if (get_param(query, "url", target, sizeof(target)) == -1 || strncmp(target, "http://", 7) != 0) {
-            json_error("url은 http://로 시작해야 합니다");
-            return;
-        }
-        size_t host_len = strcspn(target + 7, "/");
-        memcpy(host, target + 7, host_len);
-        host[host_len] = '\0';
-    } else {
-        json_error("mode는 reverse 또는 forward입니다");
+    char *raw = malloc(QUERY_MAX);
+    char *request = malloc(REQUEST_MAX);
+    char *response = malloc(RESPONSE_MAX + 1);
+    if (raw == NULL || request == NULL || response == NULL) {
+        json_error("메모리가 부족합니다");
         return;
     }
-    /* 요청 줄을 깨뜨리는 글자(공백, 줄바꿈)는 받지 않는다 */
-    for (const char *c = target; *c != '\0'; c++) {
-        if ((unsigned char)*c <= ' ') {
-            json_error("요청 대상에 공백이나 줄바꿈을 넣을 수 없습니다");
-            return;
-        }
+    if (get_param(query, "raw", raw, QUERY_MAX) == -1 || raw[0] == '\0') {
+        json_error("raw가 없습니다");
+        return;
     }
-
-    char request[PARAM_SIZE * 2 + 128];
-    int request_len = snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
-                               target, host);
+    long request_len = expand_repeats(raw, request, REQUEST_MAX);
+    if (request_len == -1) {
+        json_error("요청이 너무 깁니다");
+        return;
+    }
 
     struct timespec t0;
     struct timespec t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    int fd = connect_local(PROXY_PORT);
+    int fd = connect_local(to);
     if (fd == -1) {
-        json_error("프록시(포트 8080)에 연결하지 못했습니다");
+        json_header();
+        printf("{\"ok\":false,\"refused\":true,\"to\":%d,\"error\":\"포트 %d에 연결하지 못했습니다 (connect 실패)\"}\n", to, to);
         return;
     }
-    /* 프록시가 응답하지 않아도 이 CGI 프로세스가 끝나도록 읽기 제한 시간을 둔다 */
+    /* 상대가 응답하지 않아도 이 CGI 프로세스가 끝나도록 읽기 제한 시간을 둔다 */
     struct timeval timeout = {10, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
-    if (write(fd, request, (size_t)request_len) != request_len) {
-        close(fd);
-        json_error("프록시에 요청을 쓰지 못했습니다");
-        return;
+    /* 상대가 요청을 다 읽지 않고 응답한 뒤 닫아도(예: 431) 이 프로세스가 SIGPIPE로 죽지 않게 한다 */
+    signal(SIGPIPE, SIG_IGN);
+    long written = 0;
+    while (written < request_len) {
+        ssize_t n = write(fd, request + written, (size_t)(request_len - written));
+        if (n <= 0) {
+            break;
+        }
+        written += n;
     }
 
-    char *response = malloc(RESPONSE_MAX + 1);
-    if (response == NULL) {
-        close(fd);
-        json_error("메모리가 부족합니다");
-        return;
-    }
     size_t stored = 0;
     size_t total = 0;
     char discard[4096];
@@ -300,38 +336,73 @@ static void action_send(const char *query)
     size_t line_len = strcspn(response, "\r\n");
     const char *blank = strstr(response, "\r\n\r\n");
     size_t head_len = blank != NULL ? (size_t)(blank - response) : stored;
-    const char *body = blank != NULL ? blank + 4 : response + stored;
-    size_t body_len = stored - (size_t)(body - response);
-    int truncated = body_len > BODY_SHOW_MAX;
+    const char *res_body = blank != NULL ? blank + 4 : response + stored;
+    size_t res_body_len = stored - (size_t)(res_body - response);
+    int truncated = res_body_len > BODY_SHOW_MAX;
 
     json_header();
-    printf("{\"ok\":true,\"mode\":");
-    json_string(mode, strlen(mode));
-    printf(",\"sent\":");
-    json_string(request, (size_t)request_len);
+    printf("{\"ok\":true,\"to\":%d,\"sent_bytes\":%ld,\"written_bytes\":%ld,\"sent\":", to, request_len, written);
+    json_string(request, request_len > SENT_SHOW_MAX ? SENT_SHOW_MAX : (size_t)request_len);
+    printf(",\"sent_truncated\":%s", request_len > SENT_SHOW_MAX ? "true" : "false");
     printf(",\"status\":%d,\"status_line\":", status);
     json_string(response, line_len);
     printf(",\"headers\":");
     json_string(response, head_len);
     printf(",\"body\":");
-    json_string(body, truncated ? BODY_SHOW_MAX : body_len);
+    json_string(res_body, truncated ? BODY_SHOW_MAX : res_body_len);
     printf(",\"body_truncated\":%s,\"bytes\":%zu,\"ms\":%.1f}\n", truncated ? "true" : "false", total, ms);
+    free(raw);
+    free(request);
     free(response);
 }
 
-/* action=status: 프록시는 프로세스가 살아 있는지, 백엔드는 포트에 연결되는지로 본다 */
+/*
+ * 이름(proxy, 8001, ...)의 프로세스가 실행 중인지. 프로세스 번호 파일의 번호로 /proc/번호/stat 을 읽는다.
+ * 포트에 연결해 보는 방법은 그 서버의 로그에 "연결 수락"을 남기므로, 화면에 보여 주는 로그를 흐리지 않게 이 방법을 쓴다.
+ * 끝났지만 부모가 아직 거두지 않은 프로세스(상태 Z)는 꺼진 것으로 본다.
+ */
+static int process_is_up(const char *name)
+{
+    long pid = read_pid(name);
+    if (pid <= 0) {
+        return 0;
+    }
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL) {
+        return 0;
+    }
+    /* 형식: "번호 (프로그램 이름) 상태 ..." 상태 글자는 마지막 ')' 다음에 있다 */
+    char line[512];
+    char state = 'Z';
+    if (fgets(line, sizeof(line), fp) != NULL) {
+        const char *close_paren = strrchr(line, ')');
+        if (close_paren != NULL && close_paren[1] == ' ') {
+            state = close_paren[2];
+        }
+    }
+    fclose(fp);
+    return state != 'Z' && state != 'X';
+}
+
+static int backend_is_up(int port)
+{
+    char name[16];
+    snprintf(name, sizeof(name), "%d", port);
+    return process_is_up(name);
+}
+
+/* action=status: 프록시와 백엔드 프로세스가 실행 중인지 */
 static void action_status(void)
 {
-    /* 프록시에 연결해 보면 프록시 로그에 "연결 수락"이 찍히므로, 프록시는 프로세스 번호로 확인한다 */
-    long proxy_pid = read_pid("proxy");
-    int proxy_up = proxy_pid > 0 && kill((pid_t)proxy_pid, 0) == 0;
-
     json_header();
-    printf("{\"ok\":true,\"proxy\":{\"port\":%d,\"up\":%s},\"backends\":[", PROXY_PORT, proxy_up ? "true" : "false");
+    printf("{\"ok\":true,\"proxy\":{\"port\":%d,\"up\":%s},\"backends\":[", PROXY_PORT,
+           process_is_up("proxy") ? "true" : "false");
     for (int i = 0; i < BACKEND_COUNT; i++) {
         printf("%s{\"port\":%d,\"route\":", i > 0 ? "," : "", backends[i].port);
         json_string(backends[i].route, strlen(backends[i].route));
-        printf(",\"up\":%s}", port_is_up(backends[i].port) ? "true" : "false");
+        printf(",\"up\":%s}", backend_is_up(backends[i].port) ? "true" : "false");
     }
     printf("]}\n");
 }
@@ -340,7 +411,7 @@ static void action_status(void)
 static void action_stop(int port)
 {
     if (find_backend_root(port) == NULL) {
-        json_error("끌 수 있는 포트는 8001, 8002, 8003입니다");
+        json_error("끌 수 있는 포트는 8001~8005입니다");
         return;
     }
     char name[16];
@@ -351,7 +422,7 @@ static void action_stop(int port)
         return;
     }
     kill((pid_t)pid, SIGTERM);
-    int down = wait_port(port, 0);
+    int down = wait_backend(port, 0);
     json_header();
     printf("{\"ok\":true,\"port\":%d,\"up\":%s}\n", port, down ? "false" : "true");
 }
@@ -361,10 +432,10 @@ static void action_start(int port)
 {
     const char *root = find_backend_root(port);
     if (root == NULL) {
-        json_error("켤 수 있는 포트는 8001, 8002, 8003입니다");
+        json_error("켤 수 있는 포트는 8001~8005입니다");
         return;
     }
-    if (!port_is_up(port)) {
+    if (!backend_is_up(port)) {
         char port_text[16];
         char log_path[128];
         char pid_path[128];
@@ -396,7 +467,7 @@ static void action_start(int port)
             for (int fd = 3; fd < 256; fd++) {
                 close(fd);
             }
-            execl("build/server", "build/server", port_text, root, (char *)NULL);
+            execl(find_backend_bin(port), find_backend_bin(port), port_text, root, (char *)NULL);
             _exit(127);
         }
         FILE *fp = fopen(pid_path, "w");
@@ -404,10 +475,243 @@ static void action_start(int port)
             fprintf(fp, "%d\n", (int)pid);
             fclose(fp);
         }
-        wait_port(port, 1);
+        /* 새 프로세스가 bind, listen을 마칠 시간을 준다 */
+        struct timespec ts = {0, 200 * 1000 * 1000};
+        nanosleep(&ts, NULL);
     }
     json_header();
-    printf("{\"ok\":true,\"port\":%d,\"up\":%s}\n", port, port_is_up(port) ? "true" : "false");
+    printf("{\"ok\":true,\"port\":%d,\"up\":%s}\n", port, backend_is_up(port) ? "true" : "false");
+}
+
+
+/* ---------- action=fds: 웹 서버 프로세스의 fd 표를 /proc 에서 읽는다 ---------- */
+
+/*
+ * 소켓 번호(inode)로 /proc/net/tcp 에서 그 소켓의 상태와 양쪽 주소를 찾아 out에 쓴다.
+ * /proc/net/tcp 는 커널이 가진 TCP 소켓 목록이다. 상태 0A는 LISTEN, 01은 ESTABLISHED.
+ */
+static void describe_socket(unsigned long inode, char *out, size_t out_size)
+{
+    out[0] = '\0';
+    FILE *fp = fopen("/proc/net/tcp", "r");
+    if (fp == NULL) {
+        return;
+    }
+    char line[512];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        unsigned int laddr, lport, raddr, rport, state;
+        unsigned long ino;
+        if (sscanf(line, "%*d: %x:%x %x:%x %x %*s %*s %*s %*d %*d %lu", &laddr, &lport, &raddr, &rport, &state, &ino) != 6 ||
+            ino != inode) {
+            continue;
+        }
+        struct in_addr la = {laddr};
+        struct in_addr ra = {raddr};
+        char ltext[32];
+        char rtext[32];
+        snprintf(ltext, sizeof(ltext), "%s", inet_ntoa(la));
+        snprintf(rtext, sizeof(rtext), "%s", inet_ntoa(ra));
+        if (state == 0x0A) {
+            snprintf(out, out_size, "LISTEN %s:%u", ltext, lport);
+        } else if (state == 0x01) {
+            snprintf(out, out_size, "ESTABLISHED %s:%u <-> %s:%u", ltext, lport, rtext, rport);
+        } else {
+            snprintf(out, out_size, "상태 %02X %s:%u <-> %s:%u", state, ltext, lport, rtext, rport);
+        }
+        break;
+    }
+    fclose(fp);
+}
+
+/* 프로세스 pid의 fd 표(/proc/pid/fd)를 JSON 배열로 출력한다: [{"fd":3,"target":"socket:[123]","sock":"LISTEN ..."}] */
+static void print_fd_table(long pid)
+{
+    char dir_path[64];
+    snprintf(dir_path, sizeof(dir_path), "/proc/%ld/fd", pid);
+    printf("[");
+    DIR *dir = opendir(dir_path);
+    if (dir != NULL) {
+        int numbers[256];
+        int count = 0;
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL && count < 256) {
+            if (isdigit((unsigned char)entry->d_name[0])) {
+                numbers[count++] = (int)strtol(entry->d_name, NULL, 10);
+            }
+        }
+        closedir(dir);
+        /* readdir의 순서는 정해져 있지 않으므로 번호 순으로 놓는다 */
+        for (int i = 1; i < count; i++) {
+            for (int j = i; j > 0 && numbers[j - 1] > numbers[j]; j--) {
+                int tmp = numbers[j];
+                numbers[j] = numbers[j - 1];
+                numbers[j - 1] = tmp;
+            }
+        }
+        int printed = 0;
+        for (int i = 0; i < count; i++) {
+            char link_path[96];
+            char target[256];
+            snprintf(link_path, sizeof(link_path), "/proc/%ld/fd/%d", pid, numbers[i]);
+            ssize_t n = readlink(link_path, target, sizeof(target) - 1);
+            if (n < 0) {
+                continue;
+            }
+            target[n] = '\0';
+            char sock[128] = "";
+            unsigned long inode;
+            if (sscanf(target, "socket:[%lu]", &inode) == 1) {
+                describe_socket(inode, sock, sizeof(sock));
+            }
+            printf("%s{\"fd\":%d,\"target\":", printed++ > 0 ? "," : "", numbers[i]);
+            json_string(target, strlen(target));
+            printf(",\"sock\":");
+            json_string(sock, strlen(sock));
+            printf("}");
+        }
+    }
+    printf("]");
+}
+
+/* 부모가 parent인 프로세스들을 /proc 에서 찾아 pids에 넣고 개수를 돌려준다 */
+static int find_children(long parent, long *pids, int max)
+{
+    int count = 0;
+    DIR *dir = opendir("/proc");
+    if (dir == NULL) {
+        return 0;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && count < max) {
+        if (!isdigit((unsigned char)entry->d_name[0])) {
+            continue;
+        }
+        char path[300];
+        snprintf(path, sizeof(path), "/proc/%s/stat", entry->d_name);
+        FILE *fp = fopen(path, "r");
+        if (fp == NULL) {
+            continue;
+        }
+        /* 형식: "번호 (프로그램 이름) 상태 부모번호 ..." */
+        char line[512];
+        if (fgets(line, sizeof(line), fp) != NULL) {
+            const char *close_paren = strrchr(line, ')');
+            char state;
+            long ppid;
+            if (close_paren != NULL && sscanf(close_paren + 1, " %c %ld", &state, &ppid) == 2 && ppid == parent &&
+                state != 'Z') {
+                pids[count++] = strtol(entry->d_name, NULL, 10);
+            }
+        }
+        fclose(fp);
+    }
+    closedir(dir);
+    return count;
+}
+
+/* 한 시점의 모습: 웹 서버 프로세스(부모)와 그 자식 프로세스들의 fd 표 */
+static void print_snapshot(const char *name, long pid)
+{
+    printf("{\"name\":\"%s\",\"procs\":[{\"pid\":%ld,\"role\":\"parent\",\"fds\":", name, pid);
+    print_fd_table(pid);
+    printf("}");
+    long children[16];
+    int count = find_children(pid, children, 16);
+    for (int i = 0; i < count; i++) {
+        printf(",{\"pid\":%ld,\"role\":\"child\",\"fds\":", children[i]);
+        print_fd_table(children[i]);
+        printf("}");
+        /* 자식 프로세스가 fork, exec로 실행한 CGI 프로세스 */
+        long grand[4];
+        int grand_count = find_children(children[i], grand, 4);
+        for (int j = 0; j < grand_count; j++) {
+            printf(",{\"pid\":%ld,\"role\":\"cgi\",\"fds\":", grand[j]);
+            print_fd_table(grand[j]);
+            printf("}");
+        }
+    }
+    printf("]}");
+}
+
+/*
+ * action=fds: 웹 서버(port)의 fd 표를 세 시점에 읽는다.
+ *   before    : 연결하기 전
+ *   connected : 이 프로세스가 connect만 하고 요청은 아직 보내지 않은 때 (자식 프로세스가 recv에서 기다리는 중)
+ *   after     : 요청을 보내고 응답을 다 받은 뒤
+ * cgi가 1이면 두 번째 시점이 다르다. 3초 걸리는 CGI 요청(/cgi-bin/slow)을 먼저 보내고, CGI 프로세스가 실행 중인 때에 읽는다.
+ */
+static void action_fds(int port, int cgi)
+{
+    if (find_backend_root(port) == NULL) {
+        json_error("port는 백엔드 포트여야 합니다");
+        return;
+    }
+    char name[16];
+    snprintf(name, sizeof(name), "%d", port);
+    long pid = read_pid(name);
+    if (pid <= 0 || !backend_is_up(port)) {
+        json_error("그 포트의 웹 서버 프로세스가 실행 중이 아닙니다");
+        return;
+    }
+    struct timespec pause = {0, 150 * 1000 * 1000};
+
+    json_header();
+    printf("{\"ok\":true,\"port\":%d,\"pid\":%ld,\"steps\":[", port, pid);
+    print_snapshot("before", pid);
+
+    int fd = connect_local(port);
+    if (fd == -1) {
+        printf("],\"error\":\"connect 실패\"}\n");
+        return;
+    }
+    struct sockaddr_in local;
+    socklen_t local_len = sizeof(local);
+    getsockname(fd, (struct sockaddr *)&local, &local_len);
+    const char *request = cgi ? "GET /cgi-bin/slow HTTP/1.0\r\n\r\n" : "GET /index.html HTTP/1.0\r\n\r\n";
+    struct timeval timeout = {10, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    signal(SIGPIPE, SIG_IGN);
+    ssize_t written = 0;
+    if (cgi) {
+        written = write(fd, request, strlen(request));
+    }
+    /* 웹 서버 프로세스가 accept, fork를 (cgi면 CGI 프로세스 실행까지) 마칠 시간을 준다 */
+    nanosleep(&pause, NULL);
+    printf(",");
+    print_snapshot(cgi ? "running" : "connected", pid);
+    if (!cgi) {
+        written = write(fd, request, strlen(request));
+    }
+    char buf[4096];
+    char first[128] = "";
+    size_t total = 0;
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        if (total == 0) {
+            size_t line_len = 0;
+            while (line_len < (size_t)n && line_len < sizeof(first) - 1 && buf[line_len] != '\r' && buf[line_len] != '\n') {
+                line_len++;
+            }
+            memcpy(first, buf, line_len);
+            first[line_len] = '\0';
+        }
+        total += (size_t)n;
+    }
+    close(fd);
+    nanosleep(&pause, NULL);
+    printf(",");
+    print_snapshot("after", pid);
+
+    int status = 0;
+    sscanf(first, "HTTP/%*d.%*d %d", &status);
+    printf("],\"client_fd\":%d,\"client_port\":%d,\"sent\":", fd, ntohs(local.sin_port));
+    json_string(request, written > 0 ? (size_t)written : 0);
+    printf(",\"status\":%d,\"status_line\":", status);
+    json_string(first, strlen(first));
+    printf(",\"bytes\":%zu}\n", total);
 }
 
 /* path 파일을 from 바이트 위치부터 최대 max바이트 읽어 {"next":위치,"text":"..."}로 출력한다 */
@@ -424,8 +728,14 @@ static void send_file_part(const char *path, long from, size_t max)
         json_error("파일 크기를 알 수 없습니다");
         return;
     }
-    /* 파일이 새로 만들어져 전보다 짧아졌으면 처음부터 읽는다 */
-    if (from < 0 || from > (long)st.st_size) {
+    /* from이 음수면 파일 끝에서 그만큼 앞부터(마지막 부분만) 읽는다. 파일이 전보다 짧아졌으면 처음부터 읽는다 */
+    if (from < 0) {
+        from = (long)st.st_size + from;
+        if (from < 0) {
+            from = 0;
+        }
+    }
+    if (from > (long)st.st_size) {
         from = 0;
     }
     char *buf = malloc(max);
@@ -473,14 +783,35 @@ int main(void)
         } else {
             action_start(port);
         }
+    } else if (strcmp(action, "fds") == 0) {
+        int port = 8004;
+        if (get_param(query, "port", value, sizeof(value)) == 0) {
+            port = (int)strtol(value, NULL, 10);
+        }
+        int cgi = get_param(query, "mode", value, sizeof(value)) == 0 && strcmp(value, "cgi") == 0;
+        action_fds(port, cgi);
     } else if (strcmp(action, "log") == 0) {
         long from = 0;
         if (get_param(query, "from", value, sizeof(value)) == 0) {
             from = strtol(value, NULL, 10);
         }
-        send_file_part(RUN_DIR "/proxy.log", from, LOG_CHUNK_MAX);
+        /* name: proxy 또는 백엔드 포트 번호. 그 프로세스의 출력이 쌓이는 파일을 읽는다 */
+        char name[16];
+        char path[128];
+        if (get_param(query, "name", name, sizeof(name)) == -1) {
+            snprintf(name, sizeof(name), "proxy");
+        }
+        if (strcmp(name, "proxy") != 0 && find_backend_root((int)strtol(name, NULL, 10)) == NULL) {
+            json_error("name은 proxy 또는 백엔드 포트 번호입니다");
+            return 0;
+        }
+        if (strcmp(name, "proxy") != 0) {
+            snprintf(name, sizeof(name), "%d", (int)strtol(name, NULL, 10));
+        }
+        snprintf(path, sizeof(path), RUN_DIR "/%s.log", name);
+        send_file_part(path, from, LOG_CHUNK_MAX);
     } else if (strcmp(action, "conf") == 0) {
-        send_file_part("proxy.conf", 0, LOG_CHUNK_MAX);
+        send_file_part("demo/lab/proxy.conf", 0, LOG_CHUNK_MAX);
     } else {
         json_error("모르는 action입니다");
     }

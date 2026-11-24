@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 데모 페이지(Web Server Lab)에 필요한 프로세스를 한 번에 띄운다.
 #   백엔드 8001, 8003 (/api/), 8002 (/static/)  : build/server
-#   프록시 8080                                  : build/proxy (출력은 demo/lab/run/proxy.log 에 쌓인다)
+#   백엔드 8004 (/cgi-bin/)                      : build/server (폴더 www: CGI 프로그램 hello, echo)
+#   웹 서버 8005 (fork 없는 비교용 빌드)        : build/server-nofork
+#   프록시 8080                                  : build/proxy (규칙은 demo/lab/proxy.conf, 출력은 demo/lab/run/proxy.log 에 쌓인다)
 #   데모 페이지 서버 8000                        : build/server (페이지와 CGI 프로그램 lab 을 서빙)
 # 실행: bash demo/lab/run.sh   →   브라우저에서 http://localhost:8000/
 # 끝내기: Ctrl+C (띄운 프로세스를 모두 끝낸다)
@@ -35,11 +37,13 @@ start() {
 start 8001 ./build/server 8001 demo/proxy/backend1
 start 8002 ./build/server 8002 demo/proxy/backend2
 start 8003 ./build/server 8003 demo/proxy/backend3
-start proxy ./build/proxy 8080 proxy.conf
+start 8004 ./build/server 8004 www
+start 8005 ./build/server-nofork 8005 www
+start proxy ./build/proxy 8080 demo/lab/proxy.conf
 start lab ./build/server 8000 demo/lab/www
 
 sleep 0.5
-for name in 8001 8002 8003 proxy lab; do
+for name in 8001 8002 8003 8004 8005 proxy lab; do
   if ! kill -0 "$(cat "$run/$name.pid")" 2>/dev/null; then
     echo "실행 실패: $name ($run/$name.log 의 마지막 줄)"
     tail -n 3 "$run/$name.log"

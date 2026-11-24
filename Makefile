@@ -92,7 +92,19 @@ $(BUILD)/connect_demo: demo/connect_demo.c | $(BUILD)
 # 데모 페이지(Web Server Lab): 버튼이 부르는 CGI 프로그램을 페이지 폴더의 cgi-bin 아래에 빌드한다
 LABCGI := demo/lab/www/cgi-bin/lab
 
-lab: all $(LABCGI)
+# fail: 실패로 끝나는 CGI 프로그램 (상태 코드 500을 보여 주는 용도). 백엔드 8004의 폴더(www)에 둔다
+# slow: 3초 뒤에 응답하는 CGI 프로그램 (fork가 있을 때와 없을 때를 비교하는 용도)
+# build/server-nofork: 웹 서버를 -DNO_FORK로 빌드한 비교용 실행 파일 (연결을 자식 프로세스에게 맡기지 않는다)
+lab: all $(LABCGI) $(CGIDIR)/fail $(CGIDIR)/slow $(BUILD)/server-nofork
+
+$(CGIDIR)/slow: demo/lab/cgi/slow.c | $(CGIDIR)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD)/server-nofork: $(SRCS) $(HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) -DNO_FORK $(SRCS) -o $@
+
+$(CGIDIR)/fail: demo/lab/cgi/fail.c | $(CGIDIR)
+	$(CC) $(CFLAGS) $< -o $@
 
 $(LABCGI): demo/lab/cgi/lab.c
 	mkdir -p $(dir $@)

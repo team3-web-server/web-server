@@ -12,6 +12,7 @@
 #define MAX_BACKENDS 8
 #define PREFIX_SIZE 64
 #define HOST_SIZE 64
+#define MAX_ALLOWED 8
 
 /* 백엔드 서버 하나의 주소. host는 "127.0.0.1" 같은 IPv4 주소 문자열 */
 struct backend {
@@ -30,11 +31,15 @@ struct route {
 struct proxy_config {
     struct route routes[MAX_ROUTES];
     int route_count;
+    /* Forward Proxy 허용 목록. allowed_count가 0이면 어느 서버로든 보낸다. port가 0이면 그 주소의 모든 포트 */
+    struct backend allowed[MAX_ALLOWED];
+    int allowed_count;
 };
 
 /*
  * 설정 파일을 읽어 cfg를 채운다. 한 줄에 규칙 하나: "접두사 주소:포트 [주소:포트 ...]"
  * 예) "/api/ 127.0.0.1:8001 127.0.0.1:8003".  빈 줄과 '#'로 시작하는 줄은 건너뛴다.
+ * "allow 주소[:포트]" 줄은 Forward Proxy가 보내도 되는 서버를 적는다. 한 줄도 없으면 모든 서버를 허용한다.
  * 성공하면 0. 파일을 열 수 없거나 형식이 틀리면 원인을 출력하고 -1.
  */
 int load_config(const char *path, struct proxy_config *cfg);
@@ -51,6 +56,9 @@ const struct backend *pick_backend(struct route *route);
  * 성공하면 0. "http://"로 시작하지 않거나 주소가 비었거나 포트가 틀리면 -1.
  */
 int parse_absolute_url(const char *target, struct backend *dest, const char **path);
+
+/* Forward Proxy가 dest로 보내도 되는지. 허용 목록이 비어 있으면 항상 1 */
+int is_allowed(const struct proxy_config *cfg, const struct backend *dest);
 
 /* 서버에 TCP 연결을 걸어 그 fd를 돌려준다. host는 숫자 주소와 이름 모두 된다. 실패하면 원인을 출력하고 -1 */
 int connect_backend(const struct backend *backend);
