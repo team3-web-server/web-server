@@ -25,11 +25,12 @@
     8003: { title: '백엔드 8003', cmd: './build/server 8003 demo/proxy/backend3' },
     8002: { title: '백엔드 8002', cmd: './build/server 8002 demo/proxy/backend2' },
     8004: { title: '웹 서버 8004', cmd: './build/server 8004 www' },
-    8005: { title: '웹 서버 8005 (fork 없음)', cmd: './build/server-nofork 8005 www' }
+    8005: { title: '웹 서버 8005 (fork 없음)', cmd: './build/server-nofork 8005 www' },
+    8081: { title: '프록시 8081 (스레드 없음)', cmd: './build/proxy-nothread 8081 demo/lab/proxy.conf' }
   };
 
   var counts = { 8001: 0, 8003: 0, 8002: 0, 8004: 0 };
-  var up = { 8001: true, 8003: true, 8002: true, 8004: true, 8005: true, tcpdump: true };
+  var up = { 8001: true, 8003: true, 8002: true, 8004: true, 8005: true, 8080: true, 8081: true, tcpdump: true };
   var logs = {};      /* 이름 → { offset, tail, box } : 지금 화면에 있는 로그 칸 */
   var busy = false;
   var current = null;
@@ -180,6 +181,15 @@
             { label: 'fork 없음 (8005): 느린 요청 + 빠른 요청', cls: 'plain', run: function () { return runRace(8005); } }
           ],
           panes: [{ log: 8004 }, { log: 8005 }]
+        },
+        {
+          key: 'thread', tab: '스레드 있음과 없음', stage: 'direct', port: 8080,
+          title: '스레드 있음과 없음: 프록시에서 느린 요청 하나가 다른 클라이언트를 기다리게 하는가',
+          controls: [
+            { label: '스레드 있음 (8080): 느린 요청 + 빠른 요청', cls: 'primary plain', run: function () { return runRace(8080); } },
+            { label: '스레드 없음 (8081): 느린 요청 + 빠른 요청', cls: 'plain', run: function () { return runRace(8081); } }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8081 }]
         }
       ]
     },
@@ -510,13 +520,14 @@
     return call({ action: 'status' }).then(function (s) {
       s.backends.forEach(function (b) { up[b.port] = b.up; });
       up.tcpdump = s.capture;
+      up[8080] = s.proxy.up;
       var proxy = $('node-proxy');
       proxy.classList.toggle('up', s.proxy.up);
       proxy.classList.toggle('down', !s.proxy.up);
       var link = $('link-state');
       var downs = s.backends.filter(function (b) { return !b.up; }).map(function (b) { return b.port; });
       if (!s.proxy.up) { downs.unshift('프록시 8080'); }
-      link.textContent = downs.length ? '꺼진 프로세스: ' + downs.join(', ') : '프로세스 6개 실행 중';
+      link.textContent = downs.length ? '꺼진 프로세스: ' + downs.join(', ') : '프로세스 ' + (s.backends.length + 1) + '개 실행 중';
       link.className = 'link-state ' + (downs.length ? 'bad' : 'ok');
       paintStatus();
     }).catch(function () {
@@ -611,7 +622,9 @@
 
   function setDirect(port) {
     directPort = port;
-    $('direct-sub').textContent = port === 8005 ? '포트 8005 · fork 없는 빌드' : '포트 ' + port + ' · 폴더 www';
+    $('direct-name').textContent = port === 8080 || port === 8081 ? '프록시' : '웹 서버';
+    $('direct-sub').textContent = port === 8005 ? '포트 8005 · fork 없는 빌드' : port === 8081 ? '포트 8081 · 스레드 없는 빌드'
+      : port === 8080 ? '포트 8080 · 연결마다 스레드' : '포트 ' + port + ' · 폴더 www';
     paintStatus();
   }
 
@@ -924,7 +937,9 @@
     setChip('direct-note', '', '');
     showWhy('');
     var slowRaw = http('GET', '/cgi-bin/slow');
-    var fastRaw = http('GET', '/index.html');
+    var viaProxy = port === 8080 || port === 8081;
+    var fastPath = viaProxy ? '/api/' : '/index.html';
+    var fastRaw = http('GET', fastPath);
     var sent = $('sent');
     var got = $('received');
     sent.className = '';
@@ -943,7 +958,7 @@
 
     var slow = travelDirect($('dot'), call({ action: 'send', to: port, raw: slowRaw }), -12).then(function (r) { return report('느린 요청', r); });
     var fast = sleep(400).then(function () {
-      sent.appendChild(el('span', 'first', '빠른 요청  GET /index.html HTTP/1.0  (0.4초 뒤에 보냄)\n'));
+      sent.appendChild(el('span', 'first', '빠른 요청  GET ' + fastPath + ' HTTP/1.0  (0.4초 뒤에 보냄)\n'));
       return travelDirect($('dot2'), call({ action: 'send', to: port, raw: fastRaw }), 12);
     }).then(function (r) {
       report('빠른 요청', r);
@@ -955,7 +970,10 @@
       $('node-direct').classList.remove('busy');
       var f = both[1];
       if (f.ok) {
-        showWhy(f.ms < 1000
+        showWhy(viaProxy ? (f.ms < 1000
+          ? '빠른 요청은 ' + Math.round(f.ms) + 'ms 만에 응답을 받았다. 느린 요청은 새 스레드가 처리하고, 프록시 프로세스의 main 스레드는 바로 accept로 돌아가 빠른 요청을 다른 스레드에게 맡겼다.'
+          : '빠른 요청은 ' + Math.round(f.ms) + 'ms를 기다렸다. 프록시 프로세스의 main 스레드가 느린 요청을 직접 처리하느라 accept로 돌아가지 못했고, 빠른 요청의 연결은 그동안 커널의 대기열에 있었다.')
+          : f.ms < 1000
           ? '빠른 요청은 ' + Math.round(f.ms) + 'ms 만에 응답을 받았다. 느린 요청은 자식 프로세스가 처리하고, 웹 서버 프로세스(부모)는 바로 accept로 돌아가 빠른 요청을 다른 자식 프로세스에게 맡겼다.'
           : '빠른 요청은 ' + Math.round(f.ms) + 'ms를 기다렸다. 웹 서버 프로세스가 느린 요청을 직접 처리하느라 accept로 돌아가지 못했고, 빠른 요청의 연결은 그동안 커널의 대기열에 있었다.');
       }

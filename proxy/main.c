@@ -19,6 +19,7 @@
 #define DEFAULT_PORT 8080
 #define DEFAULT_CONFIG "proxy.conf"
 
+#ifndef NO_THREAD
 /* 새 스레드에게 넘기는 값. pthread_create는 포인터 하나만 넘길 수 있어서 한 구조체에 담는다 */
 struct client_arg {
     int client_fd;
@@ -38,6 +39,7 @@ static void *handle_client(void *arg)
     close(client_fd);
     return NULL;
 }
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -91,6 +93,11 @@ int main(int argc, char *argv[])
             continue;
         }
 
+#ifdef NO_THREAD
+        /* 비교용 빌드(-DNO_THREAD): 스레드를 만들지 않고 main 스레드가 직접 처리한다. 끝날 때까지 다음 accept로 가지 못한다 */
+        proxy_connection(client_fd, &cfg);
+        close(client_fd);
+#else
         /*
          * client_fd를 새 스레드에 넘긴다. 지역 변수 client_fd의 주소를 넘기면 안 된다:
          * 새 스레드가 읽기 전에 main 스레드가 다음 accept로 그 변수를 덮어쓸 수 있다. 연결마다 칸을 새로 만든다.
@@ -115,5 +122,6 @@ int main(int argc, char *argv[])
         }
         /* 끝난 스레드를 기다리는(pthread_join) 스레드가 없으므로, 끝나면 스스로 정리되게 한다 */
         pthread_detach(tid);
+#endif
     }
 }

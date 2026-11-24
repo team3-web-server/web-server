@@ -40,6 +40,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
 | 8004 | `build/server` (폴더 `www`) | 프록시 없이 직접 요청을 받는 웹 서버. `/cgi-bin/` 백엔드이기도 하다 |
 | (포트 없음) | `tcpdump -i lo -l -n -tt -S tcp port 8004` | 포트 8004로 오가는 TCP 패킷을 한 줄씩 적는다 |
 | 8005 | `build/server-nofork` (폴더 `www`) | 같은 코드를 `-DNO_FORK`로 빌드한 비교용 웹 서버 |
+| 8081 | `build/proxy-nothread` (설정 `demo/lab/proxy.conf`) | 같은 코드를 `-DNO_THREAD`로 빌드한 비교용 프록시 |
 
 각 프로세스의 출력은 `demo/lab/run/이름.log`에 쌓이고, 페이지 아래의 터미널 칸이 그 파일을 읽어 보여 준다.
 
@@ -54,6 +55,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
 | fd 표 | `/proc/프로세스 번호/fd` (소켓의 상태와 주소는 `/proc/net/tcp`) |
 | 켜짐, 꺼짐 표시 | `/proc/프로세스 번호/stat` |
 | fork 있음과 없음의 시간 | 8004(fork)와 8005(fork 없음)에 같은 요청 두 개를 보내 잰 값 |
+| 스레드 있음과 없음의 시간 | 프록시 8080(스레드)과 8081(스레드 없음)에 같은 요청 두 개를 보내 잰 값 |
 
 - 요청을 보내는 클라이언트는 브라우저가 아니라 CGI 프로세스 `lab`이다. 브라우저는 Forward Proxy용 요청 줄(`GET http://...`)이나 형식이 틀린 요청(상태 코드 400, 414, 431 등)을 직접 만들 수 없기 때문이다.
 - 페이지는 프록시를 거치지 않고 8000에서 직접 연다. 페이지를 주는 프로세스와 실험 대상(프록시, 백엔드)을 나눠 두면, 실험 중에 프록시를 꺼도 페이지가 계속 열린다.

@@ -57,6 +57,8 @@ static const struct {
     {8004, "www", "/cgi-bin/", "build/server"}, /* CGI 프로그램 hello, echo가 있는 폴더 */
     /* 같은 코드를 -DNO_FORK로 빌드한 웹 서버: 연결을 자식 프로세스에게 맡기지 않고 직접 처리한다. 프록시 규칙에는 없다 */
     {8005, "www", "", "build/server-nofork"},
+    /* 같은 코드를 -DNO_THREAD로 빌드한 프록시: 연결마다 스레드를 만들지 않는다. 둘째 인자는 폴더가 아니라 설정 파일이다 */
+    {8081, "demo/lab/proxy.conf", "", "build/proxy-nothread"},
 };
 #define BACKEND_COUNT ((int)(sizeof(backends) / sizeof(backends[0])))
 
