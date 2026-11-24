@@ -39,6 +39,7 @@ pids=""
 for n in 1 2 3; do
   "$server" "1800$n" "$tmp/b$n" > "$tmp/b$n.log" 2>&1 &
   pids="$pids $!"
+  [ "$n" = 3 ] && pid3=$!
 done
 "$proxy" "$pport" "$tmp/proxy.conf" > "$tmp/proxy.log" 2>&1 &
 ppid=$!
@@ -93,7 +94,9 @@ if grep -q '\[Forward\] GET http://127.0.0.1:18001/api/who.txt → 127.0.0.1:180
 
 echo "== 오류 =="
 expect "맞는 규칙이 없는 경로는 404" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$pport/other")" "404"
-expect "백엔드에 연결할 수 없으면 502" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$pport/down/x")" "502"
+# Reverse 요청은 헬스 체크가 죽은 백엔드를 미리 빼 두므로 503이 된다. Forward 요청은 헬스 체크 대상이 아니라 connect가 실패해 502
+expect "백엔드에 연결할 수 없으면 502 (Forward)" "$(curl -s --noproxy '' -x "http://127.0.0.1:$pport" -o /dev/null -w '%{http_code}' "http://127.0.0.1:18009/x")" "502"
+expect "규칙의 백엔드가 모두 죽어 있으면 503" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$pport/down/x")" "503"
 expect "502 뒤에도 프록시는 계속 동작" "$(get /static/who.txt)" "backend 2 200"
 
 echo "== 연결마다 스레드 =="
@@ -163,6 +166,27 @@ start=$SECONDS
 send_raw 'GET /static/who.txt HTTP/1.1\r\nHost: t\r\n\r\n'
 waited=$((SECONDS - start))
 if [ "$waited" -ge 4 ] && [ "$waited" -le 7 ]; then pass "다음 요청이 없으면 5초 뒤 연결을 닫음 (${waited}초)"; else bad "유휴 연결을 닫기까지 ${waited}초 (5초여야 함)"; fi
+
+echo "== 헬스 체크와 자동 제외 =="
+# api4: /api/who.txt를 네 번 요청해 받은 본문을 한 줄로 잇는다
+api4() { for _ in 1 2 3 4; do get /api/who.txt; echo -n ' / '; done; }
+if grep -q '\[Health\] 127.0.0.1:18009 연결 실패' "$tmp/proxy.log"; then pass "시작할 때 죽어 있는 백엔드를 제외했다고 출력함"; else bad "프록시 출력에 [Health] 18009 줄이 없음"; fi
+
+kill "$pid3"; wait "$pid3" 2>/dev/null
+# 끈 직후(헬스 체크가 알아채기 전)에도 502가 없어야 한다: 백엔드 3에 connect가 실패하면 백엔드 1로 다시 시도한다
+expect "백엔드 3을 끈 직후의 /api/ 요청도 모두 백엔드 1이 응답 (failover)" "$(api4)" "backend 1 200 / backend 1 200 / backend 1 200 / backend 1 200 / "
+# 요청보다 헬스 체크가 먼저 알아챘으면 [Failover] 대신 [Health] 줄이 찍힌다
+if grep -Eq '\[(Failover|Health)\] 127.0.0.1:18003 연결 실패' "$tmp/proxy.log"; then pass "백엔드 3을 제외했다고 출력함"; else bad "프록시 출력에 18003 연결 실패 줄이 없음"; fi
+sleep 3   # 헬스 체크 간격(2초)보다 길게 기다린다
+expect "백엔드 3을 끄면 /api/ 요청이 모두 백엔드 1로 감 (502 없음)" "$(api4)" "backend 1 200 / backend 1 200 / backend 1 200 / backend 1 200 / "
+
+"$server" 18003 "$tmp/b3" >> "$tmp/b3.log" 2>&1 &
+pid3=$!
+pids="$pids $pid3"
+sleep 3
+both=$(api4)
+if echo "$both" | grep -q 'backend 1 200' && echo "$both" | grep -q 'backend 3 200'; then pass "백엔드 3을 다시 켜면 두 백엔드로 번갈아 감 (자동 복귀)"; else bad "자동 복귀 뒤 받은 것: $both"; fi
+if grep -q '\[Health\] 127.0.0.1:18003 연결됨' "$tmp/proxy.log"; then pass "백엔드 3이 복귀했다고 출력함"; else bad "프록시 출력에 [Health] 18003 연결됨 줄이 없음"; fi
 
 echo "== 프록시 출력 =="
 if grep -q 'GET /api/who.txt → 127.0.0.1:18001' "$tmp/proxy.log" && grep -q 'GET /api/who.txt → 127.0.0.1:18003' "$tmp/proxy.log"; then
