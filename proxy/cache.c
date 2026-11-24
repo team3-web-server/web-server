@@ -137,9 +137,15 @@ void cache_put(const char *key, const char *data, size_t len)
         remove_entry(entry);
     }
     /* 전체 크기 제한을 넘거나 빈 칸이 없으면 사본을 하나씩 버린다. 만료된 사본이 먼저다 */
+    /* 버린 사본의 로그는 잠금을 푼 뒤에 출력한다. 출력이 막혀도 cache_lock을 기다리는 스레드가 같이 멈추지 않는다 */
+    char *dropped_keys[CACHE_SLOTS];
+    int dropped_expired[CACHE_SLOTS];
+    int dropped = 0;
     while (total_size + len > CACHE_TOTAL_MAX || find_empty() == NULL) {
         struct cache_entry *victim = pick_victim(now);
-        printf("[Cache] 버림 %s (%s)\n", victim->key, now >= victim->expire_at ? "만료됨" : "가장 오래 쓰지 않음");
+        dropped_keys[dropped] = strdup(victim->key);
+        dropped_expired[dropped] = now >= victim->expire_at;
+        dropped++;
         remove_entry(victim);
     }
     entry = find_empty();
@@ -150,6 +156,13 @@ void cache_put(const char *key, const char *data, size_t len)
     entry->last_used = ++use_count;
     total_size += len;
     pthread_mutex_unlock(&cache_lock);
+
+    for (int i = 0; i < dropped; i++) {
+        if (dropped_keys[i] != NULL) {
+            printf("[Cache] 버림 %s (%s)\n", dropped_keys[i], dropped_expired[i] ? "만료됨" : "가장 오래 쓰지 않음");
+            free(dropped_keys[i]);
+        }
+    }
 }
 
 void cache_clear(void)

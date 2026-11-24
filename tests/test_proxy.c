@@ -10,12 +10,14 @@
 #include "cache.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-static int failures = 0;
+/* hammer 스레드 여럿이 함께 올리므로 atomic이다 */
+static atomic_int failures = 0;
 
 #define CHECK(cond, msg)                                           \
     do {                                                           \
@@ -27,9 +29,11 @@ static int failures = 0;
         }                                                          \
     } while (0)
 
-/* 내용이 text인 임시 설정 파일을 만들고 load_config의 결과를 돌려준다 */
-/* 테스트용 시계: 캐시가 "지금"이라고 믿을 시각(밀리초)을 테스트가 정한다. 기다리지 않고 만료를 확인할 수 있다 */
-static long long fake_time;
+/*
+ * 테스트용 시계: 캐시가 "지금"이라고 믿을 시각(밀리초)을 테스트가 정한다. 기다리지 않고 만료를 확인할 수 있다.
+ * hammer 스레드 여럿이 함께 읽고 올리므로 atomic이다.
+ */
+static atomic_llong fake_time;
 
 static long long fake_now(void)
 {
@@ -73,6 +77,7 @@ static void *hammer(void *arg)
     return NULL;
 }
 
+/* 내용이 text인 임시 설정 파일을 만들고 load_config의 결과를 돌려준다 */
 static int load_text(const char *text, struct proxy_config *cfg)
 {
     char path[] = "/tmp/test_proxy_conf_XXXXXX";
