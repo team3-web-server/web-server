@@ -1,0 +1,250 @@
+socket fd = 3
+bind 성공: 0.0.0.0:8000
+listen 중: 포트 8000, 정적 파일 폴더 demo/lab/www (다른 터미널에서 curl localhost:8000, 끝내려면 Ctrl+C)
+연결 수락: 클라이언트 127.0.0.1:51914 (conn fd = 4)
+자식 프로세스 2139에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 642
+요청 줄: GET / HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/index.html
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2139)
+연결 수락: 클라이언트 127.0.0.1:51918 (conn fd = 4)
+자식 프로세스 2140에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:51926 (conn fd = 4)
+자식 프로세스 2141에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 508
+요청 줄: GET /lab.css HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/lab.css
+받은 바이트 수: 493
+응답: 200 OK
+요청 줄: GET /lab.js HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+연결을 닫았습니다 (자식 프로세스 2140)
+파일 경로: demo/lab/www/lab.js
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2141)
+연결 수락: 클라이언트 127.0.0.1:51940 (conn fd = 4)
+자식 프로세스 2143에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 569
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=-2500 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+연결 수락: 클라이언트 127.0.0.1:51946 (conn fd = 4)
+자식 프로세스 2145에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 551
+요청 줄: GET /cgi-bin/lab?action=status HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2144 종료 (출력 241바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2143)
+CGI 프로세스 2146 종료 (출력 323바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2145)
+연결 수락: 클라이언트 127.0.0.1:49590 (conn fd = 4)
+자식 프로세스 2147에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49606 (conn fd = 4)
+자식 프로세스 2148에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 551
+요청 줄: GET /cgi-bin/lab?action=status HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+받은 바이트 수: 567
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=156 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2150 종료 (출력 82바이트, 정상 종료 예)
+CGI 프로세스 2149 종료 (출력 323바이트, 정상 종료 예)
+응답: 200 OK
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2147)
+연결을 닫았습니다 (자식 프로세스 2148)
+연결 수락: 클라이언트 127.0.0.1:49616 (conn fd = 4)
+자식 프로세스 2151에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 569
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=-2500 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2152 종료 (출력 241바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2151)
+연결 수락: 클라이언트 127.0.0.1:49630 (conn fd = 4)
+자식 프로세스 2153에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49636 (conn fd = 4)
+자식 프로세스 2154에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 569
+받은 바이트 수: 572
+요청 줄: GET /cgi-bin/lab?action=log&name=tcpdump&from=-2500 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=-2500 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2155 종료 (출력 241바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2153)
+CGI 프로세스 2156 종료 (출력 233바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2154)
+연결 수락: 클라이언트 127.0.0.1:49652 (conn fd = 4)
+자식 프로세스 2157에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49656 (conn fd = 4)
+자식 프로세스 2158에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 567
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=156 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+받은 바이트 수: 570
+요청 줄: GET /cgi-bin/lab?action=log&name=tcpdump&from=149 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2159 종료 (출력 82바이트, 정상 종료 예)
+CGI 프로세스 2160 종료 (출력 82바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2157)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2158)
+연결 수락: 클라이언트 127.0.0.1:49660 (conn fd = 4)
+자식 프로세스 2161에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 606
+요청 줄: GET /cgi-bin/lab?action=send&to=8004&raw=GET%20%2Findex.html%20HTTP%2F1.0%0D%0A%0D%0A HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2162 종료 (출력 1034바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2161)
+연결 수락: 클라이언트 127.0.0.1:49666 (conn fd = 4)
+자식 프로세스 2164에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49670 (conn fd = 4)
+자식 프로세스 2165에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 567
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=156 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+받은 바이트 수: 570
+요청 줄: GET /cgi-bin/lab?action=log&name=tcpdump&from=149 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2167 종료 (출력 2089바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2165)
+CGI 프로세스 2166 종료 (출력 381바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2164)
+연결 수락: 클라이언트 127.0.0.1:49676 (conn fd = 4)
+자식 프로세스 2168에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 551
+요청 줄: GET /cgi-bin/lab?action=status HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2169 종료 (출력 323바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2168)
+연결 수락: 클라이언트 127.0.0.1:49686 (conn fd = 4)
+자식 프로세스 2171에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49692 (conn fd = 4)
+자식 프로세스 2172에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49708 (conn fd = 4)
+자식 프로세스 2173에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 551
+요청 줄: GET /cgi-bin/lab?action=status HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+받은 바이트 수: 571
+받은 바이트 수: 567
+요청 줄: GET /cgi-bin/lab?action=log&name=tcpdump&from=2143 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=448 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2174 종료 (출력 323바이트, 정상 종료 예)
+CGI 프로세스 2175 종료 (출력 83바이트, 정상 종료 예)
+응답: 200 OK
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2171)
+연결을 닫았습니다 (자식 프로세스 2173)
+CGI 프로세스 2176 종료 (출력 82바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2172)
+연결 수락: 클라이언트 127.0.0.1:49716 (conn fd = 4)
+자식 프로세스 2177에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49718 (conn fd = 4)
+자식 프로세스 2178에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 567
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=448 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+받은 바이트 수: 571
+요청 줄: GET /cgi-bin/lab?action=log&name=tcpdump&from=2143 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2179 종료 (출력 82바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2177)
+CGI 프로세스 2180 종료 (출력 83바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2178)
+연결 수락: 클라이언트 127.0.0.1:49720 (conn fd = 4)
+자식 프로세스 2181에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 649
+요청 줄: GET /cgi-bin/lab?action=send&to=8004&raw=POST%20%2Fcgi-bin%2Fecho%20HTTP%2F1.0%0D%0AContent-Length%3A%209%0D%0A%0D%0Amsg%3Dhello HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2182 종료 (출력 473바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2181)
+연결 수락: 클라이언트 127.0.0.1:49734 (conn fd = 4)
+자식 프로세스 2185에게 연결을 맡겼습니다 (conn fd = 4)
+연결 수락: 클라이언트 127.0.0.1:49750 (conn fd = 4)
+자식 프로세스 2186에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 567
+요청 줄: GET /cgi-bin/lab?action=log&name=8004&from=448 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+받은 바이트 수: 571
+요청 줄: GET /cgi-bin/lab?action=log&name=tcpdump&from=2143 HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2187 종료 (출력 486바이트, 정상 종료 예)
+CGI 프로세스 2188 종료 (출력 2077바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2185)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2186)
+연결 수락: 클라이언트 127.0.0.1:55134 (conn fd = 4)
+자식 프로세스 2190에게 연결을 맡겼습니다 (conn fd = 4)
+받은 바이트 수: 551
+요청 줄: GET /cgi-bin/lab?action=status HTTP/1.1
+Host 헤더: localhost:8000
+Connection 헤더: keep-alive
+파일 경로: demo/lab/www/cgi-bin/lab
+CGI 프로세스 2191 종료 (출력 323바이트, 정상 종료 예)
+응답: 200 OK
+연결을 닫았습니다 (자식 프로세스 2190)
