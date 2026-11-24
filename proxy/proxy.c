@@ -71,6 +71,7 @@ int load_config(const char *path, struct proxy_config *cfg)
                 fclose(fp);
                 return -1;
             }
+            backend->alive = 1; /* 처음에는 살아 있다고 본다. 프록시가 시작하자마자 헬스 체크 스레드가 실제 상태로 고친다 */
             route->backend_count++;
         }
         if (route->backend_count == 0) {
@@ -95,16 +96,27 @@ struct route *match_route(struct proxy_config *cfg, const char *url_path)
     return NULL;
 }
 
-/* 순번(next)을 읽고 쓰는 동안 잡는 잠금. 여러 스레드가 같은 순번을 읽어 같은 백엔드를 고르지 않게 한다 */
+/*
+ * 순번(next)과 헬스 체크 결과(alive)를 읽고 쓰는 동안 잡는 잠금.
+ * 요청을 처리하는 스레드들과 헬스 체크 스레드가 이 값들을 함께 쓴다.
+ */
 static pthread_mutex_t next_lock = PTHREAD_MUTEX_INITIALIZER;
 
 const struct backend *pick_backend(struct route *route)
 {
+    const struct backend *picked = NULL;
     pthread_mutex_lock(&next_lock);
-    const struct backend *backend = &route->backends[route->next];
-    route->next = (route->next + 1) % route->backend_count;
+    /* next부터 한 바퀴(backend_count번)만 본다. 죽은 백엔드는 건너뛰고, 살아 있는 첫 백엔드를 고른다 */
+    for (int i = 0; i < route->backend_count; i++) {
+        const struct backend *backend = &route->backends[route->next];
+        route->next = (route->next + 1) % route->backend_count;
+        if (backend->alive) {
+            picked = backend;
+            break;
+        }
+    }
     pthread_mutex_unlock(&next_lock);
-    return backend;
+    return picked;
 }
 
 int parse_absolute_url(const char *target, struct backend *dest, const char **path)
@@ -146,7 +158,8 @@ int parse_absolute_url(const char *target, struct backend *dest, const char **pa
     return 0;
 }
 
-int connect_backend(const struct backend *backend)
+/* 서버에 TCP 연결을 건다. quiet가 1이면 connect 실패의 원인을 출력하지 않는다 (헬스 체크는 2초마다 실패할 수 있다) */
+static int connect_to(const struct backend *backend, int quiet)
 {
     /*
      * getaddrinfo: 주소 문자열("127.0.0.1" 또는 "example.com")과 포트를 connect에 넘길 수 있는 주소 구조체로 바꾼다.
@@ -172,13 +185,48 @@ int connect_backend(const struct backend *backend)
     }
     /* connect: 이 소켓으로 그 주소에 TCP 연결을 건다 (3-way handshake). 프록시가 그 서버의 클라이언트가 된다 */
     if (connect(fd, result->ai_addr, result->ai_addrlen) == -1) {
-        perror("connect");
+        if (!quiet) {
+            perror("connect");
+        }
         close(fd);
         freeaddrinfo(result);
         return -1;
     }
     freeaddrinfo(result);
     return fd;
+}
+
+int connect_backend(const struct backend *backend)
+{
+    return connect_to(backend, 0);
+}
+
+void check_backends(struct proxy_config *cfg)
+{
+    for (int i = 0; i < cfg->route_count; i++) {
+        struct route *route = &cfg->routes[i];
+        for (int j = 0; j < route->backend_count; j++) {
+            struct backend *backend = &route->backends[j];
+
+            /* connect는 오래 걸릴 수 있으므로 잠금을 잡지 않고 한다. 연결되면 살아 있는 것이고, 확인만 했으니 바로 닫는다 */
+            int fd = connect_to(backend, 1);
+            int alive = fd != -1;
+            if (fd != -1) {
+                close(fd);
+            }
+
+            /* alive를 쓰는 동안만 잠금을 잡는다. pick_backend가 같은 잠금을 잡고 이 값을 읽는다 */
+            pthread_mutex_lock(&next_lock);
+            int changed = backend->alive != alive;
+            backend->alive = alive;
+            pthread_mutex_unlock(&next_lock);
+
+            if (changed) {
+                printf("[Health] %s:%d %s\n", backend->host, backend->port,
+                       alive ? "연결됨 → 다시 요청을 보냄 (자동 복귀)" : "연결 실패 → 요청을 보내지 않음 (자동 제외)");
+            }
+        }
+    }
 }
 
 /* from에서 len바이트를 읽어 to에 그대로 쓴다. 다 옮기면 0, 도중에 끊기면 -1 */
@@ -313,7 +361,15 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
             send_error(client_fd, 404);
             return 0;
         }
-        dest = *pick_backend(route);
+        const struct backend *picked = pick_backend(route);
+        if (picked == NULL) {
+            /* 이 규칙의 백엔드가 모두 죽어 있다. 연결을 시도하지 않고 503 Service Unavailable */
+            printf("[Reverse] %s %s → 살아 있는 백엔드 없음 (503)\n", req.method, req.target);
+            free_request(&req);
+            send_error(client_fd, 503);
+            return 0;
+        }
+        dest = *picked;
         printf("[Reverse] %s %s → %s:%d\n", req.method, req.target, dest.host, dest.port);
     }
 

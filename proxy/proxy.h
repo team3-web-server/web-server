@@ -12,11 +12,13 @@
 #define MAX_BACKENDS 8
 #define PREFIX_SIZE 64
 #define HOST_SIZE 64
+#define HEALTH_INTERVAL_SEC 2 /* 헬스 체크 스레드가 모든 백엔드를 한 번 검사한 뒤 쉬는 시간 */
 
 /* 백엔드 서버 하나의 주소. host는 "127.0.0.1" 같은 IPv4 주소 문자열 */
 struct backend {
     char host[HOST_SIZE];
     int port;
+    int alive; /* 헬스 체크 결과: 1이면 살아 있음, 0이면 죽음. 헬스 체크 스레드가 쓰고 pick_backend가 읽는다 (같은 잠금) */
 };
 
 /* 라우팅 규칙 하나: 경로가 prefix로 시작하면 backends 중 하나로 보낸다 */
@@ -42,8 +44,17 @@ int load_config(const char *path, struct proxy_config *cfg);
 /* 경로가 어느 규칙의 접두사로 시작하는지 찾는다. 위에 적힌 규칙이 먼저다. 없으면 NULL */
 struct route *match_route(struct proxy_config *cfg, const char *url_path);
 
-/* 규칙의 백엔드를 차례대로 하나씩 돌려준다 (라운드로빈): 0, 1, ..., 마지막, 다시 0. 여러 스레드가 동시에 불러도 된다 */
+/*
+ * 규칙의 백엔드를 차례대로 하나씩 돌려준다 (라운드로빈): 0, 1, ..., 마지막, 다시 0.
+ * 죽은 백엔드(alive가 0)는 건너뛴다 (자동 제외). 모두 죽었으면 NULL. 여러 스레드가 동시에 불러도 된다
+ */
 const struct backend *pick_backend(struct route *route);
+
+/*
+ * 헬스 체크 한 바퀴: 설정의 모든 백엔드에 connect만 해 보고 바로 close한다.
+ * 연결되면 alive를 1로, 안 되면 0으로 바꾼다. 값이 바뀐 백엔드만 "[Health] ..." 한 줄을 출력한다.
+ */
+void check_backends(struct proxy_config *cfg);
 
 /*
  * 절대 URL "http://주소[:포트][/경로]"를 나눈다. 주소와 포트는 dest에 넣고(포트가 없으면 80),
