@@ -14,12 +14,22 @@
 #define MAX_CACHE_PREFIXES 8
 #define HOST_SIZE 64
 #define HEALTH_INTERVAL_SEC 2 /* 헬스 체크 스레드가 모든 백엔드를 한 번 검사한 뒤 쉬는 시간 */
+#define POOL_MAX 4      /* 백엔드 하나에 보관하는 쉬는 연결의 최대 개수. 꽉 차면 보관하지 않고 닫는다 */
+#define POOL_IDLE_MS 4000 /* 이 시간 넘게 쉰 연결은 다시 쓰지 않고 닫는다. 백엔드가 5초 쉰 연결을 먼저 닫기 때문에 그보다 짧게 잡는다 */
 
 /* 백엔드 서버 하나의 주소. host는 "127.0.0.1" 같은 IPv4 주소 문자열 */
 struct backend {
     char host[HOST_SIZE];
     int port;
     int alive; /* 헬스 체크 결과: 1이면 살아 있음, 0이면 죽음. 헬스 체크 스레드가 쓰고 pick_backend가 읽는다 (같은 잠금) */
+
+    /*
+     * 연결 보관함: 응답을 다 받은 뒤 닫지 않고 둔 이 백엔드와의 연결들. 다음 요청이 꺼내 다시 쓴다 (keep-alive).
+     * 여러 스레드가 함께 쓰므로 pool_take, pool_put, pool_close_all이 잠금(pool_lock)을 잡고 읽고 쓴다.
+     */
+    int idle_fds[POOL_MAX];
+    long long idle_since[POOL_MAX]; /* 보관한 시각(밀리초, pool_clock의 값) */
+    int idle_count;
 };
 
 /* 라우팅 규칙 하나: 경로가 prefix로 시작하면 backends 중 하나로 보낸다 */
@@ -57,12 +67,13 @@ struct route *match_route(struct proxy_config *cfg, const char *url_path);
  */
 struct backend *pick_backend(struct route *route);
 
-/* 요청을 처리하다 connect에 실패한 백엔드를 바로 죽음(alive = 0)으로 바꾼다. 다음 헬스 체크를 기다리지 않는다 */
+/* 요청을 처리하다 connect에 실패한 백엔드를 바로 죽음(alive = 0)으로 바꾼다. 다음 헬스 체크를 기다리지 않는다. 보관한 연결도 모두 닫는다 */
 void mark_backend_dead(struct backend *backend);
 
 /*
  * 헬스 체크 한 바퀴: 설정의 모든 백엔드에 connect만 해 보고 바로 close한다.
  * 연결되면 alive를 1로, 안 되면 0으로 바꾼다. 값이 바뀐 백엔드만 "[Health] ..." 한 줄을 출력한다.
+ * 죽음으로 바뀐 백엔드의 보관함은 비운다.
  */
 void check_backends(struct proxy_config *cfg);
 
@@ -73,12 +84,28 @@ void check_backends(struct proxy_config *cfg);
  */
 int parse_absolute_url(const char *target, struct backend *dest, const char **path);
 
+/* 보관함이 읽는 시계: 지금 시각을 밀리초로 돌려준다. 보통은 CLOCK_MONOTONIC이고, 테스트가 다른 함수로 바꿔 낄 수 있다 */
+extern long long (*pool_clock)(void);
+
+/*
+ * 보관함에서 연결 하나를 꺼내 그 fd를 돌려준다. 꺼낸 연결은 보관함에서 빠지므로 다른 스레드가 같은 연결을 쓰지 않는다.
+ * POOL_IDLE_MS 넘게 쉰 연결은 닫고 건너뛴다. 쓸 연결이 없으면 -1.
+ */
+int pool_take(struct backend *backend);
+
+/* 다 쓴 연결을 보관함에 넣고, 넣은 뒤 보관 중인 연결의 수를 돌려준다. 보관함이 꽉 찼으면(POOL_MAX개) 넣지 않고 닫은 뒤 0 */
+int pool_put(struct backend *backend, int fd);
+
+/* 보관함의 연결을 모두 닫는다 (백엔드가 죽음으로 표시됐을 때). 닫은 개수를 돌려준다 */
+int pool_close_all(struct backend *backend);
+
 /* 서버에 TCP 연결을 걸어 그 fd를 돌려준다. host는 숫자 주소와 이름 모두 된다. 실패하면 원인을 출력하고 -1 */
 int connect_backend(const struct backend *backend);
 
 /*
  * 클라이언트 연결 하나를 처리한다: 요청을 읽고, 보낼 서버를 정해 전달하고, 응답을 돌려주기를 반복한다 (keep-alive).
- * 클라이언트와의 연결만 유지한다. 서버와의 연결은 요청마다 새로 맺고 응답 뒤에 닫는다.
+ * 클라이언트와의 연결을 유지하고, Reverse Proxy의 백엔드와의 연결도 응답 뒤에 닫지 않고 보관함에 넣어 다시 쓴다.
+ * Forward Proxy의 서버와의 연결은 요청마다 새로 맺고 응답 뒤에 닫는다.
  * 반복을 멈추는 때: 요청이 닫자고 했을 때, 클라이언트가 닫았을 때, 5초 동안 다음 요청이 없을 때,
  * 프록시가 에러 응답을 보냈을 때, 서버의 응답에 Content-Length가 없을 때. client_fd는 닫지 않는다.
  */
