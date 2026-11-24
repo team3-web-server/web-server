@@ -94,7 +94,7 @@ int send_error(int fd, int code)
     return code;
 }
 
-int send_file(int fd, const char *path)
+int send_file(int fd, const char *path, int keep_alive)
 {
     int file_fd = open(path, O_RDONLY);
     if (file_fd == -1) {
@@ -125,9 +125,9 @@ int send_file(int fd, const char *path)
                             "HTTP/1.1 200 OK\r\n"
                             "Content-Type: %s\r\n"
                             "Content-Length: %lld\r\n"
-                            "Connection: close\r\n"
+                            "Connection: %s\r\n"
                             "\r\n",
-                            mime_type(path), (long long)st.st_size);
+                            mime_type(path), (long long)st.st_size, keep_alive ? "keep-alive" : "close");
     if (write_all(fd, head, (size_t)head_len) == -1) {
         perror("write");
         close(file_fd);

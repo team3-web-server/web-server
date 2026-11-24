@@ -242,6 +242,57 @@ if [ -z "$(pgrep -P "$pid")" ]; then pass "끝난 자식 프로세스가 남아 
 # kill -0 은 신호를 보내지 않고 그 프로세스가 있는지만 확인한다 (있으면 0)
 if kill -0 "$pid" 2>/dev/null; then pass "모든 요청을 처리한 뒤에도 서버 프로세스가 실행 중"; else bad "서버 프로세스가 도중에 종료됨"; fi
 
+echo "== keep-alive (연결 하나에서 요청 여러 개) =="
+# send_raw <요청 바이트(printf 형식)>: 연결 하나에 그대로 보내고, 서버가 연결을 닫을 때까지 받은 것을 $resp에 담는다
+send_raw() {
+  : > "$resp"
+  if connect_to_server; then
+    printf "$1" >&3 2>/dev/null
+    cat <&3 > "$resp" 2>/dev/null
+    exec 3>&-
+  fi
+}
+# count_in_resp <글자열>: $resp에서 그 글자열이 있는 줄 수
+count_in_resp() { grep -c "$1" "$resp"; }
+
+send_raw 'GET /index.html HTTP/1.1\r\nHost: t\r\n\r\nGET /style.css HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n'
+if [ "$(count_in_resp 'HTTP/1.1 200 OK')" -eq 2 ]; then pass "HTTP/1.1 요청 두 개를 연결 하나에서 처리 (응답 2개)"; else bad "연결 하나에 보낸 요청 두 개의 응답이 2개가 아님"; fi
+if [ "$(count_in_resp 'Connection: keep-alive')" -eq 1 ] && [ "$(count_in_resp 'Connection: close')" -eq 1 ]; then
+  pass "첫 응답은 Connection: keep-alive, Connection: close 요청의 응답은 Connection: close"
+else
+  bad "응답의 Connection 헤더가 기대와 다름"
+fi
+
+send_raw 'GET /index.html HTTP/1.0\r\n\r\nGET /style.css HTTP/1.0\r\n\r\n'
+if [ "$(count_in_resp 'HTTP/1.1 200 OK')" -eq 1 ]; then pass "HTTP/1.0 요청은 응답 하나 뒤에 연결을 닫음"; else bad "HTTP/1.0 요청 뒤에 연결을 닫지 않음"; fi
+
+send_raw 'GET /index.html HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /style.css HTTP/1.0\r\n\r\n'
+if [ "$(count_in_resp 'HTTP/1.1 200 OK')" -eq 2 ]; then pass "HTTP/1.0 + Connection: keep-alive 는 연결을 유지"; else bad "HTTP/1.0 + Connection: keep-alive 인데 연결을 유지하지 않음"; fi
+
+# POST 본문 바로 뒤에 다음 요청이 붙어서 온다. Content-Length(5)만큼만 본문으로 읽어야 다음 요청의 시작이 맞는다
+send_raw 'POST /cgi-bin/echo HTTP/1.1\r\nHost: t\r\nContent-Length: 5\r\n\r\nhelloGET /cgi-bin/hello?n=2 HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n'
+if [ "$(count_in_resp 'HTTP/1.1 200 OK')" -eq 2 ] && grep -q 'QUERY_STRING=n=2' "$resp"; then
+  pass "POST 본문 뒤에 붙어 온 다음 요청을 경계에 맞게 읽음"
+else
+  bad "POST 본문 뒤에 붙어 온 다음 요청을 읽지 못함"
+fi
+
+send_raw 'GET /nope.html HTTP/1.1\r\nHost: t\r\n\r\nGET /index.html HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n'
+if [ "$(count_in_resp '^HTTP/1.1 ')" -eq 1 ] && grep -q '404 Not Found' "$resp"; then pass "에러 응답(404) 뒤에는 연결을 닫음"; else bad "에러 응답 뒤에 연결을 닫지 않음"; fi
+
+# curl은 URL을 두 개 주면 같은 서버에는 연결을 다시 쓴다. -v 출력의 "Re-using existing connection"으로 확인한다
+if curl -sv --noproxy '*' -o /dev/null -o /dev/null "http://127.0.0.1:$port/index.html" "http://127.0.0.1:$port/style.css" 2>&1 | grep -qi 're-using existing'; then
+  pass "curl이 두 번째 요청에 연결을 다시 씀"
+else
+  bad "curl이 두 번째 요청에 연결을 다시 쓰지 않음"
+fi
+
+# 요청 하나를 보내고 가만히 있으면 서버가 5초 뒤에 연결을 닫아야 한다. SECONDS는 bash가 세는 경과 초
+start=$SECONDS
+send_raw 'GET /index.html HTTP/1.1\r\nHost: t\r\n\r\n'
+waited=$((SECONDS - start))
+if [ "$waited" -ge 4 ] && [ "$waited" -le 7 ]; then pass "다음 요청이 없으면 5초 뒤 연결을 닫음 (${waited}초)"; else bad "유휴 연결을 닫기까지 ${waited}초 (5초여야 함)"; fi
+
 echo "== 안전 종료 =="
 # 멈춰 있는 연결을 하나 만든 뒤 SIGTERM을 보낸다. 서버는 새 연결을 받지 않고, 이 연결이 끝나기를 기다렸다가 끝나야 한다
 if connect_to_server; then

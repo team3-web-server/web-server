@@ -32,7 +32,7 @@ static long find_cgi_body(const char *out)
 }
 
 int run_cgi(int conn_fd, const char *program_path, const char *method, const char *query, const char *body,
-            size_t body_len)
+            size_t body_len, int keep_alive)
 {
     /* 프로그램 파일이 있고 실행할 수 있는지 확인한다 */
     struct stat st;
@@ -175,9 +175,9 @@ int run_cgi(int conn_fd, const char *program_path, const char *method, const cha
                             "HTTP/1.1 200 OK\r\n"
                             "Content-Type: %s\r\n"
                             "Content-Length: %zu\r\n"
-                            "Connection: close\r\n"
+                            "Connection: %s\r\n"
                             "\r\n",
-                            content_type, res_body_len);
+                            content_type, res_body_len, keep_alive ? "keep-alive" : "close");
     if (write_all(conn_fd, head, (size_t)head_len) == -1 ||
         write_all(conn_fd, out + body_offset, res_body_len) == -1) {
         perror("write");

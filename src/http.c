@@ -98,9 +98,15 @@ int read_request_head(int fd, char *buf, size_t size, size_t *len)
     if (buf == NULL || len == NULL || size < 2) {
         return HEAD_ERROR;
     }
-    size_t total = 0;
-    buf[0] = '\0';
-    *len = 0;
+    /* buf에 이미 들어 있는 바이트(앞 요청과 함께 온 다음 요청의 앞부분)부터 본다 */
+    size_t total = *len;
+    if (total > size - 1) {
+        return HEAD_ERROR;
+    }
+    buf[total] = '\0';
+    if (strstr(buf, "\r\n\r\n") != NULL) {
+        return HEAD_OK;
+    }
 
     for (;;) {
         /* 남은 자리. 마지막 한 바이트는 '\0' 자리로 남긴다 */
@@ -114,6 +120,10 @@ int read_request_head(int fd, char *buf, size_t size, size_t *len)
             if (errno == EINTR) {
                 /* 시그널로 중단됐을 뿐이므로 다시 읽는다 */
                 continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* 읽기 제한 시간이 지났다 */
+                return HEAD_TIMEOUT;
             }
             perror("read");
             return HEAD_ERROR;
@@ -288,4 +298,25 @@ int read_body(int fd, const char *already, size_t already_len, char *body, size_
         total += (size_t)n;
     }
     return BODY_OK;
+}
+
+/*
+ * 이 요청의 응답 뒤에도 연결을 유지할지 정한다 (RFC 9112 9.3절).
+ * HTTP/1.1은 유지가 기본이고 "Connection: close"가 있으면 닫는다.
+ * HTTP/1.0은 닫기가 기본이고 "Connection: keep-alive"가 있으면 유지한다.
+ */
+int wants_keep_alive(const char *head, int is_http11)
+{
+    char value[64];
+    if (get_header(head, "Connection", value, sizeof(value)) != 0) {
+        return is_http11;
+    }
+    printf("Connection 헤더: %s\n", value);
+    if (strcasecmp(value, "close") == 0) {
+        return 0;
+    }
+    if (strcasecmp(value, "keep-alive") == 0) {
+        return 1;
+    }
+    return is_http11;
 }
