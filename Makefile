@@ -30,7 +30,7 @@ CGIDIR  := www/cgi-bin
 CGIBINS := $(CGIDIR)/hello $(CGIDIR)/echo
 # Reverse Proxy: proxy/ 의 코드에 src/ 의 공용 코드(net.c, http.c, response.c 등)를 함께 링크한다
 PROXYSRCS := $(wildcard proxy/*.c)
-PROXYLIB  := proxy/proxy.c
+PROXYLIB  := proxy/proxy.c proxy/cache.c
 PROXYBIN  := $(BUILD)/proxy
 
 .PHONY: all test asan demo lab clean
@@ -43,16 +43,16 @@ $(BIN): $(SRCS) $(HDRS) | $(BUILD)
 $(ASANBIN): $(SRCS) $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(ASANFLAGS) $(SRCS) -o $@
 
-$(PROXYBIN): $(PROXYSRCS) proxy/proxy.h $(LIBSRCS) $(HDRS) | $(BUILD)
+$(PROXYBIN): $(PROXYSRCS) proxy/proxy.h proxy/cache.h $(LIBSRCS) $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(PROXYSRCS) $(LIBSRCS) -o $@
 
-$(PROXYBIN)-asan: $(PROXYSRCS) proxy/proxy.h $(LIBSRCS) $(HDRS) | $(BUILD)
+$(PROXYBIN)-asan: $(PROXYSRCS) proxy/proxy.h proxy/cache.h $(LIBSRCS) $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(ASANFLAGS) $(PROXYSRCS) $(LIBSRCS) -o $@
 
-$(BUILD)/test_proxy: tests/test_proxy.c $(PROXYLIB) proxy/proxy.h $(LIBSRCS) $(HDRS) | $(BUILD)
+$(BUILD)/test_proxy: tests/test_proxy.c $(PROXYLIB) proxy/proxy.h proxy/cache.h $(LIBSRCS) $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(PROXYLIB) $(LIBSRCS) $< -o $@
 
-$(BUILD)/test_proxy-asan: tests/test_proxy.c $(PROXYLIB) proxy/proxy.h $(LIBSRCS) $(HDRS) | $(BUILD)
+$(BUILD)/test_proxy-asan: tests/test_proxy.c $(PROXYLIB) proxy/proxy.h proxy/cache.h $(LIBSRCS) $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(ASANFLAGS) $(PROXYLIB) $(LIBSRCS) $< -o $@
 
 # 패턴 규칙: %는 같은 글자열을 뜻한다. build/test_http 를 만들 때는 tests/test_http.c 를 쓴다

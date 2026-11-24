@@ -33,6 +33,8 @@ cat > "$tmp/proxy.conf" <<CONF
 /static/  127.0.0.1:18002
 /cgi-bin/ 127.0.0.1:18002
 /down/    127.0.0.1:18009
+/cached/  127.0.0.1:18002
+cache /cached/
 CONF
 
 pids=""
@@ -187,6 +189,33 @@ sleep 3
 both=$(api4)
 if echo "$both" | grep -q 'backend 1 200' && echo "$both" | grep -q 'backend 3 200'; then pass "백엔드 3을 다시 켜면 두 백엔드로 번갈아 감 (자동 복귀)"; else bad "자동 복귀 뒤 받은 것: $both"; fi
 if grep -q '\[Health\] 127.0.0.1:18003 연결됨' "$tmp/proxy.log"; then pass "백엔드 3이 복귀했다고 출력함"; else bad "프록시 출력에 [Health] 18003 연결됨 줄이 없음"; fi
+
+echo "== 응답 캐싱 =="
+mkdir -p "$tmp/b2/cached"
+printf 'first\n' > "$tmp/b2/cached/a.txt"
+head -c 200000 /dev/urandom > "$tmp/b2/cached/big.bin"   # 사본 하나의 제한(100 KiB)보다 큰 응답
+cget() { curl -s --noproxy '*' -w ' %{http_code}' "http://127.0.0.1:$pport$1" | tr -d '\n'; }
+logcount() { grep -c "$1" "$tmp/proxy.log"; }
+
+expect "처음 요청은 백엔드가 응답 (miss)" "$(cget /cached/a.txt)" "first 200"
+printf 'second\n' > "$tmp/b2/cached/a.txt"   # 백엔드의 파일을 바꾼다
+expect "두 번째 요청은 캐시의 사본을 받음 (hit, 바뀌기 전 내용)" "$(cget /cached/a.txt)" "first 200"
+expect "miss와 hit을 출력함" "$(logcount '\[Cache\] MISS /cached/a.txt') $(logcount '\[Cache\] HIT /cached/a.txt')" "1 1"
+expect "쿼리가 다르면 다른 키라서 백엔드가 응답" "$(cget '/cached/a.txt?v=2')" "second 200"
+
+cget /cached/none.txt > /dev/null; cget /cached/none.txt > /dev/null
+expect "404 응답은 저장하지 않음 (두 번 모두 miss)" "$(logcount '\[Cache\] MISS /cached/none.txt') $(logcount '\[Cache\] 저장 /cached/none.txt')" "2 0"
+
+curl -s --noproxy '*' -o /dev/null "http://127.0.0.1:$pport/cached/big.bin"; curl -s --noproxy '*' -o "$tmp/big.out" "http://127.0.0.1:$pport/cached/big.bin"
+expect "100 KiB보다 큰 응답은 저장하지 않음 (두 번 모두 miss)" "$(logcount '\[Cache\] MISS /cached/big.bin') $(logcount '\[Cache\] 저장 안 함 /cached/big.bin')" "2 2"
+if cmp -s "$tmp/big.out" "$tmp/b2/cached/big.bin"; then pass "저장하지 않는 큰 응답도 그대로 전달"; else bad "큰 응답의 내용이 다름"; fi
+
+cget /api/who.txt > /dev/null
+expect "cache 줄에 없는 경로는 캐시를 보지 않음" "$(logcount '\[Cache\] .* /api/who.txt')" "0"
+
+# 캐시의 사본으로 응답할 때도 연결을 유지한다: 연결 하나로 같은 요청을 두 번 보낸다
+send_raw 'GET /cached/a.txt HTTP/1.1\r\nHost: t\r\n\r\nGET /cached/a.txt HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n'
+expect "연결 하나로 보낸 요청 두 개 모두 사본을 받음" "$(count_raw 'first')" "2"
 
 echo "== 프록시 출력 =="
 if grep -q 'GET /api/who.txt → 127.0.0.1:18001' "$tmp/proxy.log" && grep -q 'GET /api/who.txt → 127.0.0.1:18003' "$tmp/proxy.log"; then

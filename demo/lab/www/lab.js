@@ -298,9 +298,14 @@
           controls: []
         },
         {
-          key: 'cache', tab: 'Response Caching', badge: '구현 전', shell: true,
+          key: 'cache', tab: 'Response Caching', stage: 'proxy',
           title: 'Response Caching: 같은 요청은 백엔드에 다시 묻지 않는다',
-          controls: []
+          controls: [
+            { label: 'GET /cgi-bin/slow?page=1', cls: 'primary', run: function () { return runCache('/cgi-bin/slow?page=1'); } },
+            { label: 'GET /cgi-bin/slow?page=2', cls: 'primary', run: function () { return runCache('/cgi-bin/slow?page=2'); } },
+            { hint: '백엔드는 응답에 3초가 걸린다. 사본은 10초 동안 쓴다' }
+          ],
+          panes: [{ conf: true }, { log: 'proxy' }, { log: 8004 }]
         },
         {
           key: 'statuspage', tab: '/status', badge: '구현 전', shell: true,
@@ -450,6 +455,8 @@
   function logClass(line) {
     if (line.indexOf('[Reverse]') === 0) { return /\((404|503)\)/.test(line) ? 'bad' : 'reverse'; }
     if (line.indexOf('[Failover]') === 0) { return 'bad'; }
+    if (line.indexOf('[Cache] HIT') === 0) { return 'good'; }
+    if (line.indexOf('[Cache]') === 0) { return 'reverse'; }
     if (line.indexOf('[Health]') === 0) { return line.indexOf('연결 실패') > 0 ? 'bad' : 'good'; }
     if (line.indexOf('헬스 체크 연결') === 0) { return 'probe'; }
     if (line.indexOf('[Forward]') === 0) { return line.indexOf('(403)') > 0 ? 'bad' : 'forward'; }
@@ -883,7 +890,11 @@
       $('node-proxy').classList.add('busy');
       if (decision) {
         var kind = decision.kind === 'Forward' ? 'forward' : 'reverse';
-        setChip('proxy-note', '[' + decision.kind + '] → ' + decision.text, decision.port === null ? 'bad' : kind);
+        if (decision.cacheHit) {
+          setChip('proxy-note', '[Cache] HIT → 사본을 보냄', 'ok');
+        } else {
+          setChip('proxy-note', '[' + decision.kind + '] → ' + decision.text, decision.port === null ? 'bad' : kind);
+        }
       } else {
         setChip('proxy-note', '프록시 로그에 목적지 줄이 없음', 'bad');
       }
@@ -1357,6 +1368,31 @@
       showWhy(keep
         ? '클라이언트 프로세스는 connect를 한 번만 했다(클라이언트 포트가 같다). 프록시 프로세스는 요청마다 백엔드를 다시 고르고 새로 연결했다. 프록시 로그의 "클라이언트와의 연결을 유지하고 다음 요청을 기다립니다"를 확인한다.'
         : '클라이언트 프로세스가 요청마다 connect를 새로 했다(클라이언트 포트가 요청마다 다르다). 프록시 프로세스는 응답 뒤 클라이언트와의 연결을 닫았다.');
+    }).then(refreshStatus);
+  }
+
+  /* ---------- Response Caching: 프록시 로그의 [Cache] 줄을 읽어, 사본으로 응답했는지 백엔드까지 갔는지 그린다 ---------- */
+
+  function runCache(target) {
+    setStage('proxy');
+    showWhy('');
+    var result;
+    return pullLogs().then(function () {
+      return call({ action: 'send', to: 8080, raw: http('GET', target) });
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      result = r;
+      return pullLogs();
+    }).then(function (fresh) {
+      var lines = fresh.proxy || [];
+      var hit = lines.some(function (l) { return l.indexOf('[Cache] HIT ' + target) === 0; });
+      var stored = lines.some(function (l) { return l.indexOf('[Cache] 저장 ' + target) === 0; });
+      showExchange(result);
+      var ms = result.ms < 10 ? result.ms.toFixed(1) : Math.round(result.ms);
+      showWhy(hit
+        ? '이번 요청은 ' + ms + 'ms 걸렸다. 프록시 프로세스의 메모리에 같은 요청 대상(' + target + ')의 사본이 있어서, 백엔드에 연결하지 않고 사본을 보냈다 (hit). 백엔드 8004의 로그에는 새 줄이 없다.'
+        : '이번 요청은 ' + ms + 'ms 걸렸다. 사본이 없거나 만료돼서 백엔드 8004가 응답을 만들었다 (miss).' + (stored ? ' 프록시 프로세스가 그 응답을 사본으로 저장했다. 10초 안에 같은 버튼을 다시 누르면 hit이다.' : ''));
+      return animateProxy(result, hit ? { cacheHit: true, kind: 'Cache', host: null, port: null, text: '사본을 보냄' } : readDecision(lines), false);
     }).then(refreshStatus);
   }
 
