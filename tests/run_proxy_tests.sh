@@ -35,6 +35,7 @@ cat > "$tmp/proxy.conf" <<CONF
 /down/    127.0.0.1:18009
 /cached/  127.0.0.1:18002
 cache /cached/
+cache /cgi-bin/slow?
 CONF
 
 pids=""
@@ -216,6 +217,18 @@ expect "cache 줄에 없는 경로는 캐시를 보지 않음" "$(logcount '\[Ca
 # 캐시의 사본으로 응답할 때도 연결을 유지한다: 연결 하나로 같은 요청을 두 번 보낸다
 send_raw 'GET /cached/a.txt HTTP/1.1\r\nHost: t\r\n\r\nGET /cached/a.txt HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n'
 expect "연결 하나로 보낸 요청 두 개 모두 사본을 받음" "$(count_raw 'first')" "2"
+
+# 엣지 7 (캐시 스탬피드): 사본이 없을 때 같은 요청이 동시에 오면 모두 miss해서 백엔드에 간다.
+# 막지 않고 그대로 둔 동작이다. 응답이 모두 올바른지 확인하고, 백엔드에 간 횟수를 기록한다.
+st_pids=""
+for i in 1 2 3 4 5; do
+  curl -s --noproxy '*' "http://127.0.0.1:$pport/cgi-bin/slow?stampede" > "$tmp/st.$i" &
+  st_pids="$st_pids $!"
+done
+wait $st_pids
+expect "동시에 온 같은 요청 5개가 모두 올바른 응답을 받음" "$(cat "$tmp"/st.* | grep -c '^slow$')" "5"
+echo "기록: 동시 요청 5개 중 miss(백엔드에 간 요청) $(logcount '\[Cache\] MISS /cgi-bin/slow?stampede')개"
+expect "그 뒤의 같은 요청은 사본을 받음 (hit)" "$(cget '/cgi-bin/slow?stampede') $(logcount '\[Cache\] HIT /cgi-bin/slow?stampede')" "slow 200 1"
 
 echo "== 프록시 출력 =="
 if grep -q 'GET /api/who.txt → 127.0.0.1:18001' "$tmp/proxy.log" && grep -q 'GET /api/who.txt → 127.0.0.1:18003' "$tmp/proxy.log"; then
