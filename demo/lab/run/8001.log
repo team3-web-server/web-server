@@ -1,3 +1,0 @@
-socket fd = 3
-bind 성공: 0.0.0.0:8001
-listen 중: 포트 8001, 정적 파일 폴더 demo/proxy/backend1 (다른 터미널에서 curl localhost:8001, 끝내려면 Ctrl+C)
