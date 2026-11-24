@@ -75,4 +75,11 @@ int parse_content_length(const char *text, size_t *out);
  */
 int read_body(int fd, const char *already, size_t already_len, char *body, size_t content_length);
 
+/*
+ * 이 요청의 응답 뒤에도 연결을 유지할지 정한다 (RFC 9112 9.3절). head는 요청 줄 + 헤더.
+ * HTTP/1.1(is_http11이 1)은 유지가 기본이고 "Connection: close"가 있으면 닫는다.
+ * HTTP/1.0은 닫기가 기본이고 "Connection: keep-alive"가 있으면 유지한다. 유지하면 1, 닫으면 0.
+ */
+int wants_keep_alive(const char *head, int is_http11);
+
 #endif /* HTTP_H */

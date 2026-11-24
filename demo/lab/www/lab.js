@@ -263,6 +263,16 @@
       name: '프록시 부가 기능',
       scenes: [
         {
+          key: 'pkeep', tab: 'keep-alive', stage: 'proxy',
+          title: 'keep-alive: 프록시는 클라이언트 쪽 연결만 유지하고, 백엔드에는 요청마다 새로 연결한다',
+          controls: [
+            { label: 'HTTP/1.0: 요청 세 개 (요청마다 새 연결)', cls: 'plain', run: function () { return runMultiProxy(false); } },
+            { label: 'HTTP/1.1: 요청 세 개 (연결 하나를 유지)', cls: 'primary plain', run: function () { return runMultiProxy(true); } },
+            { hint: '클라이언트 포트가 같으면 같은 연결이다' }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
+        },
+        {
           key: 'xff', tab: 'X-Forwarded-For', badge: '구현 전', shell: true,
           title: 'X-Forwarded-For: 백엔드에게 원래 클라이언트의 주소를 알려 준다',
           controls: []
@@ -1195,6 +1205,51 @@
       }
       setChip('direct-note', summary, keep ? 'ok' : '');
       showWhy(text);
+    }).then(refreshStatus);
+  }
+
+  /* ---------- 프록시의 keep-alive: 클라이언트 ↔ 프록시 연결 하나로 요청 세 개, 프록시 ↔ 백엔드는 요청마다 새 연결 ---------- */
+
+  function runMultiProxy(keep) {
+    setStage('proxy');
+    showWhy('');
+    var result;
+    var sent = $('sent');
+    var got = $('received');
+    return pullLogs().then(function () {
+      return call({ action: 'multi', port: 8080, keep: keep ? 1 : 0 });
+    }).then(function (r) {
+      if (!r.ok || r.error) { throw new Error(r.error || '요청을 보내지 못했다'); }
+      result = r;
+      return pullLogs();
+    }).then(function (fresh) {
+      /* 프록시 로그에 새로 찍힌 목적지 줄을 요청 순서대로 읽는다 */
+      var decisions = (fresh.proxy || []).filter(function (l) { return /^\[(Reverse|Forward)\] /.test(l); })
+        .map(function (l) { return readDecision([l]); });
+      sent.className = '';
+      sent.textContent = '';
+      got.className = '';
+      got.textContent = '';
+      $('res-meta').textContent = '→ 8080 · 연결 ' + result.connections + '개 · ' + result.total_ms + 'ms';
+      var chain = Promise.resolve();
+      result.requests.forEach(function (q, i) {
+        chain = chain.then(function () {
+          var ok = /^HTTP\/1\.\d 2/.test(q.status_line);
+          sent.appendChild(el('span', 'first', q.sent.split('\r\n')[0] + '\n'));
+          sent.appendChild(el('span', q.connected_now ? 'len' : 'cut',
+            '  ' + (q.connected_now ? '새 연결 (connect)' : '앞 요청과 같은 연결') + ' · 클라이언트 포트 ' + q.client_port + ' · fd ' + q.client_fd + '\n'));
+          got.appendChild(el('span', ok ? 'status-ok' : 'status-bad', q.status_line || '응답 없음'));
+          got.appendChild(el('span', 'len', '  ' + q.bytes + '바이트 · ' + q.ms + 'ms\n'));
+          return animateProxy({ status: ok ? 200 : 502, status_line: q.status_line || 'HTTP/1.1 502 응답 없음' }, decisions[i] || null, true);
+        }).then(function () {
+          setChip('client-chip', '요청 ' + (i + 1) + ' / ' + result.requests.length, 'ok');
+        });
+      });
+      return chain;
+    }).then(function () {
+      showWhy(keep
+        ? '클라이언트 프로세스는 connect를 한 번만 했다(클라이언트 포트가 같다). 프록시 프로세스는 요청마다 백엔드를 다시 고르고 새로 연결했다. 프록시 로그의 "클라이언트와의 연결을 유지하고 다음 요청을 기다립니다"를 확인한다.'
+        : '클라이언트 프로세스가 요청마다 connect를 새로 했다(클라이언트 포트가 요청마다 다르다). 프록시 프로세스는 응답 뒤 클라이언트와의 연결을 닫았다.');
     }).then(refreshStatus);
   }
 

@@ -784,10 +784,13 @@ static int local_port(int fd)
  */
 static void action_multi(int port, int keep)
 {
-    static const char *const paths[] = {"/index.html", "/style.css", "/app.js"};
+    /* 프록시(8080)로 보낼 때는 Round-Robin 규칙이 있는 /api/ 를 세 번 요청한다 */
+    static const char *const direct_paths[] = {"/index.html", "/style.css", "/app.js"};
+    static const char *const proxy_paths[] = {"/api/", "/api/", "/api/"};
+    const char *const *paths = port == PROXY_PORT ? proxy_paths : direct_paths;
     const int count = 3;
-    if (find_backend_root(port) == NULL) {
-        json_error("port는 백엔드 포트여야 합니다");
+    if (!is_allowed_port(port)) {
+        json_error("port는 프록시 또는 백엔드 포트여야 합니다");
         return;
     }
     signal(SIGPIPE, SIG_IGN);

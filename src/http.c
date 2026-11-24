@@ -299,3 +299,24 @@ int read_body(int fd, const char *already, size_t already_len, char *body, size_
     }
     return BODY_OK;
 }
+
+/*
+ * 이 요청의 응답 뒤에도 연결을 유지할지 정한다 (RFC 9112 9.3절).
+ * HTTP/1.1은 유지가 기본이고 "Connection: close"가 있으면 닫는다.
+ * HTTP/1.0은 닫기가 기본이고 "Connection: keep-alive"가 있으면 유지한다.
+ */
+int wants_keep_alive(const char *head, int is_http11)
+{
+    char value[64];
+    if (get_header(head, "Connection", value, sizeof(value)) != 0) {
+        return is_http11;
+    }
+    printf("Connection 헤더: %s\n", value);
+    if (strcasecmp(value, "close") == 0) {
+        return 0;
+    }
+    if (strcasecmp(value, "keep-alive") == 0) {
+        return 1;
+    }
+    return is_http11;
+}

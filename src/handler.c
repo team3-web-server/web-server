@@ -76,27 +76,6 @@ static int receive_body(int conn_fd, const char *head, size_t head_len, char **b
 }
 
 /*
- * 이 요청의 응답 뒤에도 연결을 유지할지 정한다 (RFC 9112 9.3절).
- * HTTP/1.1은 유지가 기본이고 "Connection: close"가 있으면 닫는다.
- * HTTP/1.0은 닫기가 기본이고 "Connection: keep-alive"가 있으면 유지한다.
- */
-static int wants_keep_alive(const char *head, int is_http11)
-{
-    char value[HEADER_VALUE_SIZE];
-    if (get_header(head, "Connection", value, sizeof(value)) != 0) {
-        return is_http11;
-    }
-    printf("Connection 헤더: %s\n", value);
-    if (strcasecmp(value, "close") == 0) {
-        return 0;
-    }
-    if (strcasecmp(value, "keep-alive") == 0) {
-        return 1;
-    }
-    return is_http11;
-}
-
-/*
  * 요청을 검사하고 응답을 보낸다. 보낸 상태 코드를 돌려준다.
  * keep_alive: 200 응답에 넣을 Connection 헤더를 정한다 (1이면 keep-alive, 0이면 close).
  * *used: head 버퍼에서 이 요청이 쓴 바이트 수. 그 뒤에 남은 바이트는 다음 요청의 앞부분이다.
