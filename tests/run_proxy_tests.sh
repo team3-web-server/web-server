@@ -75,6 +75,19 @@ expect "짧은 본문이 백엔드의 CGI 프로그램까지 전달됨" "$got" "
 curl -s --noproxy '*' --data-binary "@$tmp/body.txt" "http://127.0.0.1:$pport/cgi-bin/echo" | tail -n +3 | head -c -1 > "$tmp/echoed.txt"
 if cmp -s "$tmp/echoed.txt" "$tmp/body.txt"; then pass "요청 버퍼보다 큰 본문(133336바이트)이 그대로 전달됨"; else bad "큰 본문이 원본과 다름"; fi
 
+echo "== Forward Proxy (요청 대상이 절대 URL) =="
+# curl -x <프록시 주소> : 요청을 프록시로 보내고, 요청 줄에 절대 URL을 적는다 (GET http://127.0.0.1:18001/api/who.txt HTTP/1.1)
+fget() { curl -s --noproxy '' -x "http://127.0.0.1:$pport" -w ' %{http_code}' "$1" | tr -d '\n'; }
+expect "절대 URL의 서버(18001)로 전달" "$(fget http://127.0.0.1:18001/api/who.txt)" "backend 1 200"
+expect "설정 파일에 없는 경로와 서버여도 전달 (18003의 /static/)" "$(fget http://127.0.0.1:18003/static/who.txt)" "backend 3 200"
+expect "주소가 이름(localhost)이어도 전달" "$(fget http://localhost:18002/static/who.txt)" "backend 2 200"
+got=$(curl -s --noproxy '' -x "http://127.0.0.1:$pport" -d 'msg=hello' "http://127.0.0.1:18002/cgi-bin/echo" | tail -n 1)
+expect "POST 본문도 전달" "$got" "msg=hello"
+expect "연결할 수 없는 서버면 502" "$(curl -s --noproxy '' -x "http://127.0.0.1:$pport" -o /dev/null -w '%{http_code}' http://127.0.0.1:18009/)" "502"
+# 여기까지 /api/ 로 시작하는 Reverse 요청은 다섯 번(18001, 18003, 18001, 18003, 404였던 18001)이었다
+expect "Forward 요청은 라운드로빈 순번을 바꾸지 않음 (/api/ 여섯 번째 요청은 18003)" "$(get /api/who.txt)" "backend 3 200"
+if grep -q '\[Forward\] GET http://127.0.0.1:18001/api/who.txt → 127.0.0.1:18001' "$tmp/proxy.log"; then pass "Forward 요청임을 출력함"; else bad "프록시 출력에 [Forward] 줄이 없음"; fi
+
 echo "== 오류 =="
 expect "맞는 규칙이 없는 경로는 404" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$pport/other")" "404"
 expect "백엔드에 연결할 수 없으면 502" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$pport/down/x")" "502"

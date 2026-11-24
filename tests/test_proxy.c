@@ -1,5 +1,5 @@
 /*
- * proxy.c 단위 테스트: 설정 파일 읽기, 경로로 규칙 찾기, 라운드로빈.
+ * proxy.c 단위 테스트: 설정 파일 읽기, 경로로 규칙 찾기, 라운드로빈, 절대 URL 나누기.
  * 각 테스트는 실패하면 FAIL 줄을 출력하고, 실패가 하나라도 있으면 종료 코드 1.
  */
 #include "proxy.h"
@@ -70,6 +70,25 @@ int main(void)
     CHECK(load_text("/api/\n", &cfg) == -1, "load_config: 백엔드가 없으면 -1");
     CHECK(load_text("/api/ 127.0.0.1\n", &cfg) == -1, "load_config: 포트가 없으면 -1");
     CHECK(load_text("/api/ 127.0.0.1:99999\n", &cfg) == -1, "load_config: 포트가 범위 밖이면 -1");
+
+    /* 절대 URL 나누기 (Forward Proxy) */
+    struct backend dest;
+    const char *path;
+    CHECK(parse_absolute_url("http://example.com/a/b?x=1", &dest, &path) == 0 && strcmp(dest.host, "example.com") == 0 &&
+              dest.port == 80 && strcmp(path, "/a/b?x=1") == 0,
+          "parse_absolute_url: http://example.com/a/b?x=1 → example.com, 80, /a/b?x=1");
+    CHECK(parse_absolute_url("http://127.0.0.1:8001/api/", &dest, &path) == 0 && strcmp(dest.host, "127.0.0.1") == 0 &&
+              dest.port == 8001 && strcmp(path, "/api/") == 0,
+          "parse_absolute_url: 포트가 있으면 그 포트");
+    CHECK(parse_absolute_url("http://example.com", &dest, &path) == 0 && strcmp(path, "/") == 0,
+          "parse_absolute_url: 경로가 없으면 /");
+    CHECK(parse_absolute_url("http://example.com:8080", &dest, &path) == 0 && dest.port == 8080 && strcmp(path, "/") == 0,
+          "parse_absolute_url: 포트만 있고 경로가 없으면 /");
+    CHECK(parse_absolute_url("/api/users", &dest, &path) == -1, "parse_absolute_url: http://로 시작하지 않으면 -1");
+    CHECK(parse_absolute_url("https://example.com/", &dest, &path) == -1, "parse_absolute_url: https://는 -1");
+    CHECK(parse_absolute_url("http:///a", &dest, &path) == -1, "parse_absolute_url: 주소가 비었으면 -1");
+    CHECK(parse_absolute_url("http://example.com:abc/", &dest, &path) == -1, "parse_absolute_url: 포트가 숫자가 아니면 -1");
+    CHECK(parse_absolute_url("http://example.com:99999/", &dest, &path) == -1, "parse_absolute_url: 포트가 범위 밖이면 -1");
 
     if (failures > 0) {
         printf("단위 테스트 실패 %d개\n", failures);
