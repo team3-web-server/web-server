@@ -25,8 +25,8 @@ flowchart TD
 |---|---|---|
 | 1. 문제 | 같은 요청을 매번 백엔드가 처리한다 | |
 | 2. 사본과 키 | 사본은 응답 바이트 그대로다. 키는 요청 대상 전체(`?` 뒤의 쿼리 포함)다. hit면 서버를 고르지도 연결하지도 않는다 | `proxy/proxy.c`의 `proxy_request` 0단계, `proxy/cache.c`의 `cache_get` |
-| 3. 무엇을 저장하나 | `GET` 요청의 200 응답만. `POST`, 404, 502, 503은 저장하지 않는다. `Content-Length`가 있는데 본문이 그만큼 오지 않은 응답도 저장하지 않는다 | `proxy/proxy.c`의 `is_cacheable` |
-| 4. TTL | 사본은 10초 동안만 쓴다(`CACHE_TTL_MS`). 시계는 `CLOCK_MONOTONIC`이다. 컴퓨터의 날짜와 시각을 바꿔도 거꾸로 가지 않는다 | `proxy/cache.c`의 `now_ms`, `cache_get` |
+| 3. 무엇을 저장하나 | `GET` 요청의 200 응답만. `POST`, 404, 502, 503은 저장하지 않는다. `Content-Length`가 있는데 본문이 그만큼 오지 않은 응답도 저장하지 않는다. 클라이언트가 먼저 끊거나 백엔드에서 읽다가 오류가 나서 끝까지 옮기지 못한 응답도 저장하지 않는다(`copy_buf`의 `cut`) | `proxy/proxy.c`의 `is_cacheable` |
+| 4. TTL | 사본은 저장한 때부터 10초 동안만 쓴다(`CACHE_TTL_MS`, `saved_at`). hit해도 이 기간은 늘어나지 않는다. 버릴 사본을 고르는 `last_used`와는 다른 칸이다. 시계는 `CLOCK_MONOTONIC`이다. 컴퓨터의 날짜와 시각을 바꿔도 거꾸로 가지 않는다 | `proxy/cache.c`의 `now_ms`, `cache_get` |
 | 5. 크기 제한 | 사본 하나는 100 KiB까지(넘으면 모으기를 그만두고 저장하지 않는다), 전체는 1 MiB까지. 넘치면 가장 오래 쓰지 않은 사본부터 버린다(LRU) | `proxy/proxy.c`의 `copy_append`, `proxy/cache.c`의 `cache_put` |
 | 6. 잠금 | 캐시는 여러 스레드가 함께 쓴다. `cache_lock`(백엔드 순번의 `next_lock`과 별도)으로 지킨다. hit: 잠금 안에서 사본을 복사하고, 잠금을 푼 뒤 클라이언트에게 쓴다. miss: 잠금 없이 응답을 모으고, 저장할 때만 잠금을 잡는다 | `proxy/cache.c`의 `cache_get`, `cache_put` |
 
@@ -57,7 +57,7 @@ curl -s -o /dev/null http://localhost:8080/static/
 ```
 [Cache] MISS /static/
 [Reverse] GET /static/ → 127.0.0.1:8002
-[Cache] 저장 /static/ 139바이트 (10초 동안 씀)
+[Cache] 저장 /static/ 139바이트 (물어본 때부터 10초 동안 씀)
 [Cache] HIT /static/ → 사본 139바이트를 보냄 (백엔드에 연결하지 않음)
 ```
 
@@ -68,7 +68,6 @@ curl -s -o /dev/null http://localhost:8080/static/
 
 ## 아직 다루지 않은 것 (다음 단계에서 다룬다)
 
-- 시각 칸이 하나(`last_used`)다. 만료와 LRU를 같은 값으로 판단해서, hit할 때마다 사본의 수명이 10초씩 늘어난다. 계속 요청이 오는 사본은 만료되지 않는다.
 - 시계를 `cache.c` 안에서 직접 읽는다. TTL이 지난 뒤의 동작을 테스트하려면 실제로 10초를 기다려야 해서, 만료 테스트가 없다.
 - 자리가 모자랄 때 만료된 사본이 있어도 가장 오래 쓰지 않은 사본을 버린다.
 - 사본이 만료된 직후 같은 요청이 동시에 여러 개 오면 모두 miss해서 백엔드에 간다.

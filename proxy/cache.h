@@ -35,12 +35,14 @@ extern long long (*cache_clock)(void);
 int cache_get(const char *key, char **data, size_t *len);
 
 /*
- * key의 사본으로 data(len바이트)를 저장한다. 만료 시각은 저장한 때 + CACHE_TTL_MS.
- * 같은 key의 사본이 있으면 바꾼다.
+ * key의 사본으로 data(len바이트)를 저장한다. 저장했으면 1, 저장하지 않았으면 0을 돌려준다.
+ * fetched_at은 이 응답을 백엔드에 물어보기 시작한 시각(cache_clock의 값)이다. 만료 시각은 fetched_at + CACHE_TTL_MS.
+ * 같은 key의 사본이 있으면 바꾼다. 단, 있는 사본이 더 늦게 물어본 응답이면 바꾸지 않는다.
+ * 이미 만료된 응답(받는 데 TTL보다 오래 걸림)은 저장하지 않는다.
  * 자리가 모자라면 만료된 사본부터, 그다음은 가장 오래 쓰지 않은 사본부터 버린다 (LRU).
  * len이 CACHE_OBJECT_MAX보다 크거나 key가 너무 길면 저장하지 않는다.
  */
-void cache_put(const char *key, const char *data, size_t len);
+int cache_put(const char *key, const char *data, size_t len, long long fetched_at);
 
 /* 사본을 모두 버린다 (테스트에서 쓴다) */
 void cache_clear(void);
