@@ -463,7 +463,10 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
         free(cached);
         return kept == 1;
     }
+    /* miss면 백엔드에 물어보기 시작하는 시각을 적어 둔다. 사본의 만료 시각을 여기서부터 센다 */
+    long long asked_at = 0;
     if (use_cache) {
+        asked_at = cache_clock();
         printf("[Cache] MISS %s\n", req.target);
     }
 
@@ -584,8 +587,11 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
         if (copy.too_large) {
             printf("[Cache] 저장 안 함 %s (응답이 %d바이트보다 큼)\n", req.target, CACHE_OBJECT_MAX);
         } else if (!copy.cut && is_cacheable(copy.data, copy.len)) {
-            cache_put(req.target, copy.data, copy.len);
-            printf("[Cache] 저장 %s %zu바이트 (%d초 동안 씀)\n", req.target, copy.len, CACHE_TTL_MS / 1000);
+            if (cache_put(req.target, copy.data, copy.len, asked_at)) {
+                printf("[Cache] 저장 %s %zu바이트 (물어본 때부터 %d초 동안 씀)\n", req.target, copy.len, CACHE_TTL_MS / 1000);
+            } else {
+                printf("[Cache] 저장 안 함 %s (더 늦게 물어본 사본이 이미 있거나, 받는 동안 만료됨)\n", req.target);
+            }
         }
         free(copy.data);
     }

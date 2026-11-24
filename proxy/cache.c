@@ -113,15 +113,17 @@ int cache_get(const char *key, char **data, size_t *len)
     return hit;
 }
 
-void cache_put(const char *key, const char *data, size_t len)
+int cache_put(const char *key, const char *data, size_t len, long long fetched_at)
 {
     if (len > CACHE_OBJECT_MAX || strlen(key) >= CACHE_KEY_SIZE) {
-        return;
+        return 0;
     }
     char *copy = malloc(len + 1);
     if (copy == NULL) {
-        return;
+        return 0;
     }
+    /* 만료 시각은 저장하는 지금이 아니라 백엔드에 물어보기 시작한 때부터 센다. 응답을 받는 데 걸린 시간만큼 내용은 이미 낡았다 */
+    long long expire_at = fetched_at + CACHE_TTL_MS;
     memcpy(copy, data, len);
     copy[len] = '\0';
 
@@ -133,6 +135,16 @@ void cache_put(const char *key, const char *data, size_t len)
      * 그 사이 다른 스레드가 같은 key를 넣었어도 사본은 하나만 남는다.
      */
     struct cache_entry *entry = find_entry(key);
+    /*
+     * 저장하지 않는 두 경우:
+     * - 받는 데 TTL보다 오래 걸려서 이미 만료된 응답
+     * - 있는 사본이 더 늦게 물어본 응답일 때 (expire_at이 더 늦다). 먼저 물어보고 늦게 끝난 스레드가 새 사본을 옛 내용으로 덮어쓰지 않는다
+     */
+    if (now >= expire_at || (entry != NULL && now < entry->expire_at && entry->expire_at > expire_at)) {
+        pthread_mutex_unlock(&cache_lock);
+        free(copy);
+        return 0;
+    }
     if (entry != NULL) {
         remove_entry(entry);
     }
@@ -152,7 +164,7 @@ void cache_put(const char *key, const char *data, size_t len)
     snprintf(entry->key, sizeof(entry->key), "%s", key);
     entry->data = copy;
     entry->len = len;
-    entry->expire_at = now + CACHE_TTL_MS;
+    entry->expire_at = expire_at;
     entry->last_used = ++use_count;
     total_size += len;
     pthread_mutex_unlock(&cache_lock);
@@ -163,6 +175,7 @@ void cache_put(const char *key, const char *data, size_t len)
             free(dropped_keys[i]);
         }
     }
+    return 1;
 }
 
 void cache_clear(void)

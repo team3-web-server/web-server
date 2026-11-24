@@ -68,7 +68,7 @@ static void *hammer(void *arg)
             }
             free(got);
         } else {
-            cache_put("/shared", "body", 4);
+            cache_put("/shared", "body", 4, cache_clock());
         }
         if ((i + seed) % 7 == 0) {
             fake_time += CACHE_TTL_MS; /* 가끔 사본을 만료시킨다 */
@@ -173,18 +173,18 @@ int main(void)
     size_t got_len;
     cache_clear();
     CHECK(cache_get("/a", &got, &got_len) == 0, "cache_get: 넣은 적 없는 키는 miss");
-    cache_put("/a", "hello", 5);
+    cache_put("/a", "hello", 5, cache_clock());
     CHECK(cache_get("/a", &got, &got_len) == 1 && got_len == 5 && memcmp(got, "hello", 5) == 0, "cache_get: 넣은 사본을 그대로 돌려준다 (hit)");
     free(got);
     CHECK(cache_get("/a?x=1", &got, &got_len) == 0, "cache_get: 쿼리가 다르면 다른 키");
-    cache_put("/a", "bye", 3);
+    cache_put("/a", "bye", 3, cache_clock());
     CHECK(cache_get("/a", &got, &got_len) == 1 && got_len == 3 && memcmp(got, "bye", 3) == 0, "cache_put: 같은 키로 다시 넣으면 사본이 바뀐다");
     free(got);
 
     /* 크기 제한: 사본 하나 100 KiB, 전체 1 MiB */
     char *big = malloc(CACHE_OBJECT_MAX + 1);
     memset(big, 'x', CACHE_OBJECT_MAX + 1);
-    cache_put("/big", big, CACHE_OBJECT_MAX + 1);
+    cache_put("/big", big, CACHE_OBJECT_MAX + 1, cache_clock());
     CHECK(cache_get("/big", &got, &got_len) == 0, "cache_put: 100 KiB보다 큰 사본은 저장하지 않는다");
 
     /* 100 KiB짜리 사본은 10개까지 들어간다(1,024,000바이트). 11번째를 넣으면 가장 오래 쓰지 않은 사본이 버려진다 */
@@ -192,13 +192,13 @@ int main(void)
     char key[16];
     for (int i = 0; i < 10; i++) {
         snprintf(key, sizeof(key), "/k%d", i);
-        cache_put(key, big, CACHE_OBJECT_MAX);
+        cache_put(key, big, CACHE_OBJECT_MAX, cache_clock());
     }
     int hit0 = cache_get("/k0", &got, &got_len); /* /k0을 방금 썼으므로, 가장 오래 쓰지 않은 사본은 /k1이 된다 */
     if (hit0) {
         free(got);
     }
-    cache_put("/k10", big, CACHE_OBJECT_MAX);
+    cache_put("/k10", big, CACHE_OBJECT_MAX, cache_clock());
     int has0 = cache_get("/k0", &got, &got_len);
     if (has0) {
         free(got);
@@ -218,7 +218,7 @@ int main(void)
     /* 1. 경계: 만료 시각 = 저장한 때 + TTL. 그 시각이 된 순간부터 만료다 */
     cache_clear();
     fake_time = 1000;
-    cache_put("/a", "v1", 2);
+    cache_put("/a", "v1", 2, cache_clock());
     fake_time = 1000 + CACHE_TTL_MS - 1;
     CHECK(has("/a") == 1, "엣지 1: 만료 시각 1밀리초 전에는 hit");
     fake_time = 1000 + CACHE_TTL_MS;
@@ -227,27 +227,51 @@ int main(void)
     /* 2. 지연 삭제: 만료된 사본은 찾은 그 자리에서 지워진다 */
     cache_clear();
     fake_time = 0;
-    cache_put("/a", "12345", 5);
-    cache_put("/b", "123", 3);
+    cache_put("/a", "12345", 5, cache_clock());
+    cache_put("/b", "123", 3, cache_clock());
     fake_time = CACHE_TTL_MS;
     CHECK(cache_size() == 8, "엣지 2: 만료됐어도 아무도 찾지 않으면 메모리에 남아 있다");
     CHECK(has("/a") == 0 && cache_size() == 3, "엣지 2: 만료된 사본을 찾으면 miss이고, 그 사본은 지워진다");
-    cache_put("/a", "new", 3);
+    cache_put("/a", "new", 3, cache_clock());
     CHECK(has("/a") == 1 && cache_size() == 6, "엣지 2: miss 뒤에 넣은 새 사본으로 hit");
 
     /* 3. 확인과 교체 사이 끼어들기: A가 miss를 본 뒤 저장하기 전에 B가 같은 키를 저장한다 */
     cache_clear();
     fake_time = 0;
-    cache_put("/a", "old", 3);
+    cache_put("/a", "old", 3, cache_clock());
     fake_time = CACHE_TTL_MS;
     int a_missed = !has("/a");            /* 스레드 A: 만료를 보고 miss. 이제 백엔드에 다녀온다 */
-    cache_put("/a", "from-B", 6);         /* 스레드 B: 그 사이에 같은 키를 저장한다 */
-    cache_put("/a", "from-A", 6);         /* 스레드 A: 돌아와서 저장한다. 잠금 안에서 키로 다시 찾아 B의 사본을 바꾼다 */
+    cache_put("/a", "from-B", 6, cache_clock());         /* 스레드 B: 그 사이에 같은 키를 저장한다 */
+    cache_put("/a", "from-A", 6, cache_clock());         /* 스레드 A: 돌아와서 저장한다. 잠금 안에서 키로 다시 찾아 B의 사본을 바꾼다 */
     int ok3 = cache_get("/a", &got, &got_len) == 1 && got_len == 6 && memcmp(got, "from-A", 6) == 0;
     if (ok3) {
         free(got);
     }
     CHECK(a_missed && ok3 && cache_size() == 6, "엣지 3: 두 스레드가 같은 키를 차례로 저장해도 사본은 하나만 남는다");
+
+    /* 9. 먼저 물어보고 늦게 끝난 응답: A가 시각 0에 물어보고, B가 시각 1000에 물어봐 먼저 저장한다. A가 뒤늦게 저장하러 온다 */
+    cache_clear();
+    fake_time = 3000;
+    int b_stored = cache_put("/a", "new-from-B", 10, 1000);
+    int a_stored = cache_put("/a", "old-from-A", 10, 0);
+    int ok9 = cache_get("/a", &got, &got_len) == 1 && got_len == 10 && memcmp(got, "new-from-B", 10) == 0;
+    if (ok9) {
+        free(got);
+    }
+    CHECK(b_stored == 1 && a_stored == 0 && ok9 && cache_size() == 10,
+          "엣지 9: 먼저 물어보고 늦게 끝난 응답은 더 늦게 물어본 사본을 덮어쓰지 않는다");
+
+    /* 10. 만료 시각은 저장한 때가 아니라 물어본 때부터 센다: 시각 0에 물어보고 3초 뒤에 저장했다 */
+    cache_clear();
+    fake_time = 3000;
+    cache_put("/a", "slow", 4, 0);
+    fake_time = CACHE_TTL_MS - 1;
+    int before_expire = has("/a");
+    fake_time = CACHE_TTL_MS;
+    CHECK(before_expire == 1 && has("/a") == 0, "엣지 10: 3초 걸려 받은 응답은 물어본 때부터 10초가 되면 만료된다 (저장한 때부터 10초가 아니다)");
+    cache_clear();
+    fake_time = CACHE_TTL_MS + 1;
+    CHECK(cache_put("/a", "late", 4, 0) == 0 && has("/a") == 0, "엣지 10: 받는 데 TTL보다 오래 걸린 응답은 저장하지 않는다");
 
     /* 3. 실제 스레드 넷으로: 동시에 찾고, 만료시키고, 저장한다 */
     cache_clear();
@@ -264,27 +288,27 @@ int main(void)
     /* 4. hit은 만료 시각을 늘리지 않는다 */
     cache_clear();
     fake_time = 0;
-    cache_put("/a", "v1", 2);
+    cache_put("/a", "v1", 2, cache_clock());
     fake_time = CACHE_TTL_MS - 1;
     CHECK(has("/a") == 1, "엣지 4: 만료 직전에 hit");
     fake_time = CACHE_TTL_MS;
     CHECK(has("/a") == 0, "엣지 4: 방금 hit했어도 만료 시각이 되면 miss (hit이 수명을 늘리지 않는다)");
-    cache_put("/a", "v2", 2);
+    cache_put("/a", "v2", 2, cache_clock());
     fake_time = CACHE_TTL_MS + CACHE_TTL_MS - 1;
     CHECK(has("/a") == 1, "엣지 4: 다시 저장하면 그때부터 새로 TTL만큼 쓴다");
 
     /* 6. 자리가 모자라면 만료된 사본을 먼저 버린다. /old는 가장 최근에 쓴 사본이지만 만료됐다 */
     cache_clear();
     fake_time = 0;
-    cache_put("/old", big, CACHE_OBJECT_MAX);
+    cache_put("/old", big, CACHE_OBJECT_MAX, cache_clock());
     fake_time = 5000;
     for (int i = 1; i < 10; i++) {
         snprintf(key, sizeof(key), "/k%d", i);
-        cache_put(key, big, CACHE_OBJECT_MAX);
+        cache_put(key, big, CACHE_OBJECT_MAX, cache_clock());
     }
     int old_hit = has("/old"); /* /old를 방금 썼다. LRU만 보면 가장 오래 쓰지 않은 사본은 /k1이다 */
     fake_time = CACHE_TTL_MS;  /* /old(0에 저장)는 만료, /k1~/k9(5000에 저장)는 아직 아니다 */
-    cache_put("/new", big, CACHE_OBJECT_MAX);
+    cache_put("/new", big, CACHE_OBJECT_MAX, cache_clock());
     CHECK(old_hit == 1 && has("/old") == 0 && has("/k1") == 1 && has("/new") == 1,
           "엣지 6: 만료된 사본(/old)을 먼저 버리고, 가장 오래 쓰지 않은 사본(/k1)은 남긴다");
 
