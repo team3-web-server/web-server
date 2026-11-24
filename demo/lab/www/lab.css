@@ -220,3 +220,28 @@ button:focus-visible, input:focus-visible { outline: 3px solid #93b4f8; outline-
 .term .note { color: var(--term-dim); }
 #client-screen { white-space: normal; }
 #client-screen pre { margin-bottom: 8px; }
+
+/* TCP Handshake와 레이어 장면 */
+.mode-proxy .only-seq, .mode-direct .only-seq { display: none; }
+.mode-seq .only-proxy, .mode-seq .only-direct, .mode-seq #node-client, .mode-seq #client-chip, .mode-seq .dot { display: none; }
+.seq-head { font-size: 15px; font-weight: 700; text-anchor: middle; fill: var(--ink); }
+.seq-sub { font-size: 12.5px; text-anchor: middle; fill: var(--muted); }
+.seq-life { stroke: #aab1c0; stroke-width: 2; stroke-dasharray: 5 5; }
+.seq-phase { font-size: 12.5px; font-weight: 700; fill: var(--muted); }
+.seq-band { fill: #f1f3f8; }
+.pkt { cursor: pointer; }
+.pkt line { stroke-width: 2.5; }
+.pkt text { font-family: var(--mono); font-size: 12.5px; text-anchor: middle; }
+.pkt .hitbox { fill: transparent; }
+.pkt.hs line { stroke: var(--req); } .pkt.hs text { fill: var(--req); }
+.pkt.data line { stroke: var(--res); } .pkt.data text { fill: var(--res); font-weight: 700; }
+.pkt.ack line { stroke: #8b93a3; } .pkt.ack text { fill: var(--muted); }
+.pkt.fin line { stroke: var(--err); } .pkt.fin text { fill: var(--err); }
+.pkt.sel .hitbox { fill: #fff4d6; }
+.screen[hidden] { display: none; }
+.term .layer { margin-bottom: 8px; padding: 5px 8px; border-left: 4px solid; border-radius: 0 6px 6px 0; background: #1b2029; }
+.term .layer.ip { border-color: #f6b756; }
+.term .layer.tcp { border-color: #7fb0ff; }
+.term .layer.http { border-color: #6fdc8c; }
+.term .layer b { display: block; font-size: 11.5px; letter-spacing: 0.03em; }
+.term .layer.ip b { color: #f6b756; } .term .layer.tcp b { color: #7fb0ff; } .term .layer.http b { color: #6fdc8c; }

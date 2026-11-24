@@ -5,7 +5,7 @@
 
 | 주제 | 장면 |
 |---|---|
-| 소켓과 TCP | Socket과 fd, TCP Handshake와 레이어(준비 중) |
+| 소켓과 TCP | Socket과 fd, TCP Handshake와 레이어 |
 | HTTP | HTTP GET, 상태 코드(13개), POST, HTTP/1.0과 HTTP/1.1(구현 전) |
 | 동적 요청과 동시성 | 정적과 동적 (CGI), fork 있음과 없음 |
 | Reverse Proxy | Reverse Proxy, Round-Robin, 가중치 Round-Robin(구현 전), 502 Bad Gateway, Health Check(구현 전) |
@@ -22,6 +22,13 @@ bash demo/lab/run.sh
 
 브라우저에서 `http://localhost:8000/` 을 연다. 끝낼 때는 그 터미널에서 Ctrl+C를 누른다. 띄운 프로세스가 모두 끝난다.
 
+TCP Handshake와 레이어 장면은 패킷 캡처 프로그램 `tcpdump`가 필요하다. 패킷 캡처는 관리자 권한이 있어야 하므로 아래를 한 번만 실행해 둔다. 하지 않아도 다른 장면은 그대로 동작한다.
+
+```bash
+which tcpdump || sudo apt install -y tcpdump
+sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
+```
+
 ## 띄우는 프로세스
 
 | 포트 | 프로세스 | 역할 |
@@ -31,6 +38,7 @@ bash demo/lab/run.sh
 | 8001, 8003 | `build/server` | `/api/` 백엔드 |
 | 8002 | `build/server` | `/static/` 백엔드 |
 | 8004 | `build/server` (폴더 `www`) | 프록시 없이 직접 요청을 받는 웹 서버. `/cgi-bin/` 백엔드이기도 하다 |
+| (포트 없음) | `tcpdump -i lo -l -n -tt -S tcp port 8004` | 포트 8004로 오가는 TCP 패킷을 한 줄씩 적는다 |
 | 8005 | `build/server-nofork` (폴더 `www`) | 같은 코드를 `-DNO_FORK`로 빌드한 비교용 웹 서버 |
 
 각 프로세스의 출력은 `demo/lab/run/이름.log`에 쌓이고, 페이지 아래의 터미널 칸이 그 파일을 읽어 보여 준다.
@@ -42,6 +50,7 @@ bash demo/lab/run.sh
 | 보낸 요청, 받은 응답, 걸린 시간 | CGI 프로세스 `lab`이 소켓으로 실제로 보내고 받은 바이트와 그 사이에 잰 시간 |
 | 터미널 칸 | 각 프로세스가 표준 출력에 쓴 로그 파일 |
 | 프록시 그림에서 점이 가는 백엔드 | 프록시 로그의 `[Reverse] GET /api/ → 127.0.0.1:8001` 줄 |
+| TCP Handshake와 레이어의 패킷 | `tcpdump`가 포트 8004의 패킷을 적은 `demo/lab/run/tcpdump.log` |
 | fd 표 | `/proc/프로세스 번호/fd` (소켓의 상태와 주소는 `/proc/net/tcp`) |
 | 켜짐, 꺼짐 표시 | `/proc/프로세스 번호/stat` |
 | fork 있음과 없음의 시간 | 8004(fork)와 8005(fork 없음)에 같은 요청 두 개를 보내 잰 값 |

@@ -93,13 +93,22 @@
           </g>
           <text id="direct-note" class="chip only-direct" x="705" y="272"></text>
 
+          <!-- TCP Handshake와 레이어 장면: 캡처한 패킷을 위에서 아래로 한 줄씩 그린다 (lab.js가 채운다) -->
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+            </marker>
+          </defs>
+          <g id="seq" class="only-seq"></g>
+
           <circle id="dot" class="dot hidden" r="9" cx="110" cy="190"/>
           <circle id="dot2" class="dot hidden" r="9" cx="110" cy="190"/>
         </svg>
       </div>
 
       <div class="term client" id="term-client">
-        <h3><span class="who">클라이언트</span><span id="res-meta" class="meta"></span></h3>
+        <h3><span class="who" id="client-who">클라이언트</span><span id="res-meta" class="meta"></span></h3>
+        <div class="screen" id="layer-screen" hidden></div>
         <div class="screen" id="client-screen">
           <div class="label">보낸 요청</div>
           <pre id="sent" class="empty">아직 보낸 요청이 없다</pre>

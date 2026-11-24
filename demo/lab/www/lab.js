@@ -20,6 +20,7 @@
   var PROXY_BACKENDS = [8001, 8003, 8002, 8004];
   var PROCESS = {
     proxy: { title: '프록시 8080', cmd: './build/proxy 8080 demo/lab/proxy.conf' },
+    tcpdump: { title: '패킷 캡처 (커널이 주고받은 패킷)', cmd: 'tcpdump -i lo -l -n -tt -S tcp port 8004' },
     8001: { title: '백엔드 8001', cmd: './build/server 8001 demo/proxy/backend1' },
     8003: { title: '백엔드 8003', cmd: './build/server 8003 demo/proxy/backend3' },
     8002: { title: '백엔드 8002', cmd: './build/server 8002 demo/proxy/backend2' },
@@ -28,7 +29,7 @@
   };
 
   var counts = { 8001: 0, 8003: 0, 8002: 0, 8004: 0 };
-  var up = { 8001: true, 8003: true, 8002: true, 8004: true, 8005: true };
+  var up = { 8001: true, 8003: true, 8002: true, 8004: true, 8005: true, tcpdump: true };
   var logs = {};      /* 이름 → { offset, tail, box } : 지금 화면에 있는 로그 칸 */
   var busy = false;
   var current = null;
@@ -101,9 +102,14 @@
           panes: [{ log: 8004 }, { fd: true }]
         },
         {
-          key: 'tcp', tab: 'TCP Handshake와 레이어', badge: '준비 중', shell: true,
+          key: 'tcp', tab: 'TCP Handshake와 레이어', stage: 'seq',
           title: 'TCP Handshake와 레이어: HTTP 요청 하나가 TCP, IP에 실려 가는 모습',
-          controls: []
+          controls: [
+            { label: 'GET /index.html 보내고 패킷 읽기', cls: 'primary plain', run: function () { return runCapture(http('GET', '/index.html')); } },
+            { label: 'POST /cgi-bin/echo 보내고 패킷 읽기', cls: 'plain', run: function () { return runCapture(http('POST', '/cgi-bin/echo', { body: 'msg=hello' })); } },
+            { hint: '화살표를 누르면 그 패킷의 IP, TCP, HTTP 층을 오른쪽에 보여 준다 · seq, ack는 첫 패킷 기준 상대값' }
+          ],
+          panes: [{ log: 'tcpdump' }, { log: 8004 }]
         }
       ]
     },
@@ -488,6 +494,7 @@
   function refreshStatus() {
     return call({ action: 'status' }).then(function (s) {
       s.backends.forEach(function (b) { up[b.port] = b.up; });
+      up.tcpdump = s.capture;
       var proxy = $('node-proxy');
       proxy.classList.toggle('up', s.proxy.up);
       proxy.classList.toggle('down', !s.proxy.up);
@@ -565,7 +572,8 @@
   }
 
   function showError(message) {
-    var got = $('received');
+    /* TCP 장면에서는 보낸 요청, 받은 응답 칸이 숨겨져 있으므로 층을 보여 주는 칸에 적는다 */
+    var got = current && current.stage === 'seq' ? $('layer-screen') : $('received');
     got.className = '';
     got.textContent = '';
     got.appendChild(el('span', 'status-bad', '요청을 보내지 못했다: ' + message));
@@ -594,8 +602,14 @@
 
   function setStage(mode, port) {
     $('stage').setAttribute('class', 'mode-' + mode);
-    $('stage').setAttribute('aria-label', mode === 'proxy' ? '클라이언트, 프록시, 백엔드 사이의 흐름' : '클라이언트와 웹 서버 사이의 흐름');
-    if (mode === 'direct') {
+    $('stage').setAttribute('aria-label', mode === 'proxy' ? '클라이언트, 프록시, 백엔드 사이의 흐름' : mode === 'seq' ? '클라이언트와 웹 서버의 커널이 주고받은 패킷' : '클라이언트와 웹 서버 사이의 흐름');
+    var seq = mode === 'seq';
+    $('layer-screen').hidden = !seq;
+    $('client-screen').hidden = seq;
+    $('client-who').textContent = seq ? '고른 패킷의 층' : '클라이언트';
+    if (seq) {
+      $('stage').setAttribute('viewBox', '0 0 900 345');
+    } else if (mode === 'direct') {
       setDirect(port || 8004);
       /* 칸이 둘뿐이므로 그 둘이 크게 보이도록 그림의 보이는 범위를 좁힌다 */
       $('stage').setAttribute('viewBox', '0 105 840 185');
@@ -619,6 +633,7 @@
     $('received').className = 'empty';
     $('received').textContent = '아직 받은 응답이 없다';
     $('res-meta').textContent = '';
+    if (scene.stage === 'seq') { drawSeq([], null); }
   }
 
   function showExt(flag, name) {
@@ -930,6 +945,168 @@
           : '빠른 요청은 ' + Math.round(f.ms) + 'ms를 기다렸다. 웹 서버 프로세스가 느린 요청을 직접 처리하느라 accept로 돌아가지 못했고, 빠른 요청의 연결은 그동안 커널의 대기열에 있었다.');
       }
       return pullLogs();
+    }).then(refreshStatus);
+  }
+
+  /* ---------- TCP Handshake와 레이어: tcpdump가 적은 실제 패킷을 그린다 ---------- */
+
+  var SVG = 'http://www.w3.org/2000/svg';
+  function svg(tag, attrs, text) {
+    var node = document.createElementNS(SVG, tag);
+    Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    if (text !== undefined) { node.textContent = text; }
+    return node;
+  }
+
+  var FLAG_NAME = { 'S': 'SYN', 'S.': 'SYN+ACK', '.': 'ACK', 'P.': 'PSH+ACK', 'F.': 'FIN+ACK', 'FP.': 'FIN+PSH+ACK', 'R': 'RST', 'R.': 'RST+ACK' };
+
+  /* tcpdump 한 줄: "시각 IP 주소.포트 > 주소.포트: Flags [S], seq 1, ack 2, win ..., length 0" */
+  function parsePacket(line) {
+    var m = /^(\d+\.\d+) IP (\S+)\.(\d+) > (\S+)\.(\d+): Flags \[([^\]]+)\],(?: seq (\d+)(?::(\d+))?,)?(?: ack (\d+),)? win \d+.*length (\d+)/.exec(line);
+    if (!m) { return null; }
+    return {
+      time: Number(m[1]), src: m[2], sport: Number(m[3]), dst: m[4], dport: Number(m[5]), flags: m[6],
+      seq: m[7] === undefined ? null : Number(m[7]), ack: m[9] === undefined ? null : Number(m[9]), len: Number(m[10]), line: line
+    };
+  }
+
+  function packetKind(p) {
+    if (p.flags.indexOf('S') >= 0) { return 'hs'; }
+    if (p.flags.indexOf('F') >= 0 || p.flags.indexOf('R') >= 0) { return 'fin'; }
+    if (p.len > 0) { return 'data'; }
+    return 'ack';
+  }
+
+  var seqState = { packets: [], exchange: null, clientPort: 0 };
+
+  function drawSeq(packets, exchange) {
+    var g = $('seq');
+    g.textContent = '';
+    seqState.packets = packets;
+    seqState.exchange = exchange;
+    var left = 250;
+    var right = 650;
+    var clientPort = packets.length ? packets[0].sport : 0;
+    seqState.clientPort = clientPort;
+    g.appendChild(svg('text', { class: 'seq-head', x: left, y: 20 }, '클라이언트 쪽 커널'));
+    g.appendChild(svg('text', { class: 'seq-sub', x: left, y: 37 }, clientPort ? '127.0.0.1 포트 ' + clientPort + ' (CGI 프로세스 lab의 소켓)' : 'CGI 프로세스 lab의 소켓'));
+    g.appendChild(svg('text', { class: 'seq-head', x: right, y: 20 }, '웹 서버 쪽 커널'));
+    g.appendChild(svg('text', { class: 'seq-sub', x: right, y: 37 }, '127.0.0.1 포트 8004 (웹 서버 프로세스의 소켓)'));
+    g.appendChild(svg('line', { class: 'seq-life', x1: left, y1: 46, x2: left, y2: 340 }));
+    g.appendChild(svg('line', { class: 'seq-life', x1: right, y1: 46, x2: right, y2: 340 }));
+    var layer = $('layer-screen');
+    if (!packets.length) {
+      layer.textContent = '';
+      layer.appendChild(el('div', 'empty', '버튼을 누르면 요청을 보내고, 그동안 커널이 주고받은 패킷을 읽어 온다'));
+      return [];
+    }
+    var step = Math.min(30, 280 / packets.length);
+    var base = { c: null, s: null }; /* 양쪽의 첫 seq. 상대값을 만들 때 뺀다 */
+    packets.forEach(function (p) {
+      var side = p.sport === clientPort ? 'c' : 's';
+      if (base[side] === null && p.seq !== null) { base[side] = p.seq; }
+    });
+    var phases = { hs: '연결 맺기 (3-way handshake)', data: '데이터 (HTTP)', fin: '연결 끊기' };
+    var lastPhase = null;
+    var nodes = [];
+    packets.forEach(function (p, i) {
+      var fromClient = p.sport === clientPort;
+      var y = 62 + i * step;
+      var kind = packetKind(p);
+      var phase = kind === 'ack' ? lastPhase : kind;
+      if (phase !== lastPhase && phases[phase]) {
+        g.appendChild(svg('text', { class: 'seq-phase', x: 8, y: y + 4 }, phases[phase]));
+        lastPhase = phase;
+      }
+      var relSeq = p.seq === null ? null : p.seq - base[fromClient ? 'c' : 's'];
+      var relAck = p.ack === null ? null : p.ack - base[fromClient ? 's' : 'c'];
+      p.rel = { seq: relSeq, ack: relAck };
+      var label = FLAG_NAME[p.flags] || p.flags;
+      if (relSeq !== null) { label += '  seq=' + relSeq; }
+      if (relAck !== null) { label += '  ack=' + relAck; }
+      if (p.len > 0) { label += '  데이터 ' + p.len + '바이트'; }
+      var group = svg('g', { class: 'pkt ' + kind, tabindex: 0, role: 'button', 'aria-label': label });
+      group.appendChild(svg('rect', { class: 'hitbox', x: left, y: y - step / 2, width: right - left, height: step, rx: 4 }));
+      group.appendChild(svg('line', { x1: fromClient ? left : right, y1: y + 5, x2: fromClient ? right : left, y2: y + 5, 'marker-end': 'url(#arrow)' }));
+      group.appendChild(svg('text', { x: (left + right) / 2, y: y }, label));
+      group.style.visibility = 'hidden';
+      group.addEventListener('click', function () { selectPacket(i); });
+      group.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectPacket(i); } });
+      g.appendChild(group);
+      nodes.push(group);
+    });
+    return nodes;
+  }
+
+  /* 고른 패킷을 IP, TCP, HTTP 층으로 나눠 오른쪽 칸에 적는다 */
+  function selectPacket(index) {
+    var p = seqState.packets[index];
+    var ex = seqState.exchange;
+    Array.prototype.forEach.call($('seq').querySelectorAll('.pkt'), function (n, i) { n.classList.toggle('sel', i === index); });
+    var box = $('layer-screen');
+    box.textContent = '';
+    var fromClient = p.sport === seqState.clientPort;
+    function layer(cls, name, lines) {
+      var div = el('div', 'layer ' + cls);
+      div.appendChild(el('b', '', name));
+      lines.forEach(function (t) { div.appendChild(el('div', '', t)); });
+      box.appendChild(div);
+    }
+    layer('ip', 'IP 층: 어느 컴퓨터에서 어느 컴퓨터로', ['보낸 주소 ' + p.src + ' → 받는 주소 ' + p.dst]);
+    var tcp = ['보낸 포트 ' + p.sport + ' → 받는 포트 ' + p.dport, 'Flags [' + p.flags + '] = ' + (FLAG_NAME[p.flags] || p.flags)];
+    if (p.seq !== null) { tcp.push('seq ' + p.seq + ' (상대값 ' + p.rel.seq + ')'); }
+    if (p.ack !== null) { tcp.push('ack ' + p.ack + ' (상대값 ' + p.rel.ack + ')'); }
+    tcp.push('실은 데이터 ' + p.len + '바이트');
+    layer('tcp', 'TCP 층: 어느 소켓으로, 몇 번째 바이트인지', tcp);
+    if (p.len === 0) {
+      layer('http', 'HTTP 층', ['없음. 데이터가 0바이트인 패킷이다 (연결을 맺거나, 받았다고 알리거나, 연결을 끊는 패킷)']);
+    } else if (fromClient) {
+      layer('http', 'HTTP 층: 클라이언트 프로세스가 write한 요청 ' + p.len + '바이트', ex.sent.replace(/\r\n/g, '\n').split('\n'));
+    } else {
+      var text = (ex.headers + '\r\n\r\n' + ex.body).replace(/\r\n/g, '\n').split('\n').slice(0, 14);
+      layer('http', 'HTTP 층: 웹 서버 프로세스가 write한 응답 중 ' + p.len + '바이트 (응답 전체 ' + ex.bytes + '바이트)', text);
+    }
+    $('res-meta').textContent = '패킷 ' + (index + 1) + ' / ' + seqState.packets.length;
+  }
+
+  function runCapture(raw) {
+    if (!up.tcpdump) {
+      return Promise.reject(new Error('패킷 캡처(tcpdump)가 꺼져 있다. demo/lab/run.sh를 실행한 터미널의 안내를 확인한다'));
+    }
+    var result;
+    var lines = [];
+    drawSeq([], null);
+    /* 먼저 캡처 파일을 끝까지 읽어 두고, 요청을 보낸 뒤에 새로 쌓인 줄만 이 요청의 패킷으로 본다 */
+    return pullLogs().then(function () {
+      return call({ action: 'send', to: 8004, raw: raw });
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      result = r;
+      /* tcpdump가 줄을 파일에 쓰는 데 시간이 조금 걸린다. 연결을 끊는 패킷이 보일 때까지 최대 여섯 번 읽는다 */
+      function poll(tries) {
+        return sleep(250).then(pullLogs).then(function (fresh) {
+          lines = lines.concat(fresh.tcpdump || []);
+          var fins = lines.filter(function (l) { return /Flags \[F/.test(l); }).length;
+          return fins >= 2 || tries <= 1 ? null : poll(tries - 1);
+        });
+      }
+      return poll(6);
+    }).then(function () {
+      var all = lines.map(parsePacket).filter(Boolean);
+      var syn = all.filter(function (p) { return p.flags === 'S'; })[0];
+      if (!syn) { throw new Error('캡처 파일에서 이 요청의 SYN 패킷을 찾지 못했다'); }
+      /* 이 요청의 연결(클라이언트 포트가 같은 패킷)만 남긴다 */
+      var packets = all.filter(function (p) { return p.sport === syn.sport || p.dport === syn.sport; });
+      var nodes = drawSeq(packets, result);
+      var chain = Promise.resolve();
+      nodes.forEach(function (n) {
+        chain = chain.then(function () { n.style.visibility = 'visible'; return sleep(320); });
+      });
+      return chain.then(function () {
+        var firstData = 0;
+        packets.some(function (p, i) { if (p.len > 0) { firstData = i; return true; } return false; });
+        selectPacket(firstData);
+      });
     }).then(refreshStatus);
   }
 

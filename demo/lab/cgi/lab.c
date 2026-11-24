@@ -9,7 +9,7 @@
  *   action=stop   : port=8001 처럼 백엔드 하나를 끝낸다
  *   action=start  : 끝낸 백엔드를 다시 실행한다
  *   action=fds    : 웹 서버 프로세스(부모와 자식)의 fd 표를 /proc 에서 읽는다 (연결 전, 연결된 때, 끝난 뒤)
- *   action=log    : name(proxy 또는 백엔드 포트)의 프로세스가 출력한 로그 파일을 from 바이트 위치부터 읽는다
+ *   action=log    : name(proxy, tcpdump 또는 백엔드 포트)의 프로세스가 출력한 로그 파일을 from 바이트 위치부터 읽는다
  *   action=conf   : 데모용 라우팅 규칙 파일(demo/lab/proxy.conf) 내용
  *
  * 실행 위치는 레포의 맨 위 폴더다 (demo/lab/run.sh가 거기서 서버를 띄운다).
@@ -397,8 +397,8 @@ static int backend_is_up(int port)
 static void action_status(void)
 {
     json_header();
-    printf("{\"ok\":true,\"proxy\":{\"port\":%d,\"up\":%s},\"backends\":[", PROXY_PORT,
-           process_is_up("proxy") ? "true" : "false");
+    printf("{\"ok\":true,\"capture\":%s,\"proxy\":{\"port\":%d,\"up\":%s},\"backends\":[",
+           process_is_up("tcpdump") ? "true" : "false", PROXY_PORT, process_is_up("proxy") ? "true" : "false");
     for (int i = 0; i < BACKEND_COUNT; i++) {
         printf("%s{\"port\":%d,\"route\":", i > 0 ? "," : "", backends[i].port);
         json_string(backends[i].route, strlen(backends[i].route));
@@ -801,11 +801,13 @@ int main(void)
         if (get_param(query, "name", name, sizeof(name)) == -1) {
             snprintf(name, sizeof(name), "proxy");
         }
-        if (strcmp(name, "proxy") != 0 && find_backend_root((int)strtol(name, NULL, 10)) == NULL) {
-            json_error("name은 proxy 또는 백엔드 포트 번호입니다");
+        /* tcpdump: 패킷 캡처 프로그램(tcpdump)이 포트 8004의 패킷을 한 줄씩 적는 파일 */
+        int is_named = strcmp(name, "proxy") == 0 || strcmp(name, "tcpdump") == 0;
+        if (!is_named && find_backend_root((int)strtol(name, NULL, 10)) == NULL) {
+            json_error("name은 proxy, tcpdump 또는 백엔드 포트 번호입니다");
             return 0;
         }
-        if (strcmp(name, "proxy") != 0) {
+        if (!is_named) {
             snprintf(name, sizeof(name), "%d", (int)strtol(name, NULL, 10));
         }
         snprintf(path, sizeof(path), RUN_DIR "/%s.log", name);
