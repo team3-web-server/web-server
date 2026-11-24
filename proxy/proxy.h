@@ -48,7 +48,10 @@ struct route *match_route(struct proxy_config *cfg, const char *url_path);
  * 규칙의 백엔드를 차례대로 하나씩 돌려준다 (라운드로빈): 0, 1, ..., 마지막, 다시 0.
  * 죽은 백엔드(alive가 0)는 건너뛴다 (자동 제외). 모두 죽었으면 NULL. 여러 스레드가 동시에 불러도 된다
  */
-const struct backend *pick_backend(struct route *route);
+struct backend *pick_backend(struct route *route);
+
+/* 요청을 처리하다 connect에 실패한 백엔드를 바로 죽음(alive = 0)으로 바꾼다. 다음 헬스 체크를 기다리지 않는다 */
+void mark_backend_dead(struct backend *backend);
 
 /*
  * 헬스 체크 한 바퀴: 설정의 모든 백엔드에 connect만 해 보고 바로 close한다.

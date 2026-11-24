@@ -173,9 +173,12 @@ api4() { for _ in 1 2 3 4; do get /api/who.txt; echo -n ' / '; done; }
 if grep -q '\[Health\] 127.0.0.1:18009 연결 실패' "$tmp/proxy.log"; then pass "시작할 때 죽어 있는 백엔드를 제외했다고 출력함"; else bad "프록시 출력에 [Health] 18009 줄이 없음"; fi
 
 kill "$pid3"; wait "$pid3" 2>/dev/null
+# 끈 직후(헬스 체크가 알아채기 전)에도 502가 없어야 한다: 백엔드 3에 connect가 실패하면 백엔드 1로 다시 시도한다
+expect "백엔드 3을 끈 직후의 /api/ 요청도 모두 백엔드 1이 응답 (failover)" "$(api4)" "backend 1 200 / backend 1 200 / backend 1 200 / backend 1 200 / "
+# 요청보다 헬스 체크가 먼저 알아챘으면 [Failover] 대신 [Health] 줄이 찍힌다
+if grep -Eq '\[(Failover|Health)\] 127.0.0.1:18003 연결 실패' "$tmp/proxy.log"; then pass "백엔드 3을 제외했다고 출력함"; else bad "프록시 출력에 18003 연결 실패 줄이 없음"; fi
 sleep 3   # 헬스 체크 간격(2초)보다 길게 기다린다
 expect "백엔드 3을 끄면 /api/ 요청이 모두 백엔드 1로 감 (502 없음)" "$(api4)" "backend 1 200 / backend 1 200 / backend 1 200 / backend 1 200 / "
-if grep -q '\[Health\] 127.0.0.1:18003 연결 실패' "$tmp/proxy.log"; then pass "백엔드 3을 제외했다고 출력함"; else bad "프록시 출력에 [Health] 18003 연결 실패 줄이 없음"; fi
 
 "$server" 18003 "$tmp/b3" >> "$tmp/b3.log" 2>&1 &
 pid3=$!

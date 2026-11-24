@@ -102,13 +102,13 @@ struct route *match_route(struct proxy_config *cfg, const char *url_path)
  */
 static pthread_mutex_t next_lock = PTHREAD_MUTEX_INITIALIZER;
 
-const struct backend *pick_backend(struct route *route)
+struct backend *pick_backend(struct route *route)
 {
-    const struct backend *picked = NULL;
+    struct backend *picked = NULL;
     pthread_mutex_lock(&next_lock);
     /* next부터 한 바퀴(backend_count번)만 본다. 죽은 백엔드는 건너뛰고, 살아 있는 첫 백엔드를 고른다 */
     for (int i = 0; i < route->backend_count; i++) {
-        const struct backend *backend = &route->backends[route->next];
+        struct backend *backend = &route->backends[route->next];
         route->next = (route->next + 1) % route->backend_count;
         if (backend->alive) {
             picked = backend;
@@ -117,6 +117,13 @@ const struct backend *pick_backend(struct route *route)
     }
     pthread_mutex_unlock(&next_lock);
     return picked;
+}
+
+void mark_backend_dead(struct backend *backend)
+{
+    pthread_mutex_lock(&next_lock);
+    backend->alive = 0;
+    pthread_mutex_unlock(&next_lock);
 }
 
 int parse_absolute_url(const char *target, struct backend *dest, const char **path)
@@ -338,6 +345,7 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
      * 아니면 Reverse Proxy: 경로로 라우팅 규칙을 찾고 백엔드를 차례대로 하나 고른다.
      */
     struct backend dest;
+    int backend_fd = -1;
     const char *forward_path = NULL; /* Forward Proxy일 때만 쓴다: 절대 URL에서 경로 부분 */
     if (strncmp(req.target, ABSOLUTE_PREFIX, sizeof(ABSOLUTE_PREFIX) - 1) == 0) {
         if (parse_absolute_url(req.target, &dest, &forward_path) == -1) {
@@ -346,6 +354,14 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
             return 0;
         }
         printf("[Forward] %s %s → %s:%d\n", req.method, req.target, dest.host, dest.port);
+
+        /* 클라이언트가 정한 서버에 연결한다. 연결하지 못하면 502 Bad Gateway (대신 보낼 다른 서버가 없다) */
+        backend_fd = connect_backend(&dest);
+        if (backend_fd == -1) {
+            free_request(&req);
+            send_error(client_fd, 502);
+            return 0;
+        }
     } else {
         char url_path[PATH_BUF_SIZE];
         const char *query;
@@ -361,24 +377,32 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
             send_error(client_fd, 404);
             return 0;
         }
-        const struct backend *picked = pick_backend(route);
-        if (picked == NULL) {
-            /* 이 규칙의 백엔드가 모두 죽어 있다. 연결을 시도하지 않고 503 Service Unavailable */
+        /*
+         * 2) 백엔드를 골라 연결한다. 서버와의 연결은 요청마다 새로 맺는다.
+         * 연결하지 못하면 그 백엔드를 바로 제외하고 다음 백엔드로 다시 시도한다 (failover).
+         * 헬스 체크가 알아채기 전(최대 HEALTH_INTERVAL_SEC초)에 죽은 백엔드를 골라도 클라이언트는 에러를 받지 않는다.
+         * 제외한 백엔드는 다시 고르지 않으므로, 많아야 백엔드 수만큼 시도한다.
+         */
+        for (int attempt = 0; attempt < route->backend_count && backend_fd == -1; attempt++) {
+            struct backend *picked = pick_backend(route);
+            if (picked == NULL) {
+                break;
+            }
+            dest = *picked;
+            printf("[Reverse] %s %s → %s:%d\n", req.method, req.target, dest.host, dest.port);
+            backend_fd = connect_backend(&dest);
+            if (backend_fd == -1) {
+                mark_backend_dead(picked);
+                printf("[Failover] %s:%d 연결 실패 → 제외하고 다음 백엔드로 다시 시도\n", dest.host, dest.port);
+            }
+        }
+        if (backend_fd == -1) {
+            /* 살아 있는 백엔드가 하나도 없다 (처음부터 없었거나, 시도한 백엔드가 모두 실패했다). 503 Service Unavailable */
             printf("[Reverse] %s %s → 살아 있는 백엔드 없음 (503)\n", req.method, req.target);
             free_request(&req);
             send_error(client_fd, 503);
             return 0;
         }
-        dest = *picked;
-        printf("[Reverse] %s %s → %s:%d\n", req.method, req.target, dest.host, dest.port);
-    }
-
-    /* 2) 그 서버에 연결한다. 연결하지 못하면 502 Bad Gateway. 서버와의 연결은 요청마다 새로 맺는다 */
-    int backend_fd = connect_backend(&dest);
-    if (backend_fd == -1) {
-        free_request(&req);
-        send_error(client_fd, 502);
-        return 0;
     }
 
     /*
