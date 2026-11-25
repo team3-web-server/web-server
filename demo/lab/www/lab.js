@@ -45,6 +45,9 @@
   var health = { offset: -60000, tail: '', first: true }; /* 프록시 로그에서 [Health], [Failover] 줄만 따로 읽는 위치 */
   var procView = null;   /* 프로세스 표 칸: { box, note, target, seen, gone } */
   var procBusy = false;
+  var poolView = null;   /* 프록시의 백엔드 목록과 연결 보관함 칸: { box, cmd, seen } */
+  var poolBusy = false;
+  var lastActive = 0;    /* CGI 프로세스가 마지막 요청의 응답을 다 받은 시각. 보관한 연결이 쉬기 시작한 때로 본다 */
   var current = null;
   var directPort = 8004;
 
@@ -63,6 +66,8 @@
     }).join('&');
     return fetch(CGI + '?' + query, { cache: 'no-store' }).then(function (r) {
       if (!r.ok) { throw new Error('CGI 응답 ' + r.status); }
+      /* 요청을 실제로 보낸 동작이 끝난 시각. 화면의 점은 그 뒤에 움직이므로, 점이 멈춘 때가 아니라 이때부터 연결이 쉰다 */
+      if (params.action === 'send' || params.action === 'multi') { lastActive = Date.now(); }
       return r.json();
     });
   }
@@ -207,6 +212,34 @@
       ]
     },
     {
+      name: 'Forward Proxy',
+      scenes: [
+        {
+          key: 'forward', tab: 'Forward Proxy', stage: 'proxy',
+          title: 'Forward Proxy: 어디로 보낼지 클라이언트가 정한다',
+          controls: [
+            { label: 'GET http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
+            { label: 'GET http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
+            { sep: true },
+            { input: 'forward-url', value: 'http://example.com/', label: '보낼 주소 (http://로 시작)' },
+            { label: '이 주소로 보내기', cls: 'forward plain', run: function () { return send(8080, http('GET', $('forward-url').value.trim())); } }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8002 }]
+        },
+        {
+          key: 'allow', tab: '허용 목록', stage: 'proxy',
+          title: '허용 목록: 허용한 서버로만 나가게 한다',
+          controls: [
+            { label: '허용: http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
+            { label: '허용: http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
+            { label: '목록에 없음: http://127.0.0.1:8004/index.html', cls: '', run: get(8080, 'http://127.0.0.1:8004/index.html') },
+            { label: '목록에 없음: http://127.0.0.1:8003/api/', cls: '', run: get(8080, 'http://127.0.0.1:8003/api/') }
+          ],
+          panes: [{ conf: true, bottom: true }, { log: 'proxy' }, { log: 8002 }, { log: 8004 }]
+        }
+      ]
+    },
+    {
       name: 'Reverse Proxy',
       scenes: [
         {
@@ -246,34 +279,6 @@
       ]
     },
     {
-      name: 'Forward Proxy',
-      scenes: [
-        {
-          key: 'forward', tab: 'Forward Proxy', stage: 'proxy',
-          title: 'Forward Proxy: 어디로 보낼지 클라이언트가 정한다',
-          controls: [
-            { label: 'GET http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
-            { label: 'GET http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
-            { sep: true },
-            { input: 'forward-url', value: 'http://example.com/', label: '보낼 주소 (http://로 시작)' },
-            { label: '이 주소로 보내기', cls: 'forward plain', run: function () { return send(8080, http('GET', $('forward-url').value.trim())); } }
-          ],
-          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8002 }]
-        },
-        {
-          key: 'allow', tab: '허용 목록', stage: 'proxy',
-          title: '허용 목록: 허용한 서버로만 나가게 한다',
-          controls: [
-            { label: '허용: http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
-            { label: '허용: http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
-            { label: '목록에 없음: http://127.0.0.1:8004/index.html', cls: '', run: get(8080, 'http://127.0.0.1:8004/index.html') },
-            { label: '목록에 없음: http://127.0.0.1:8003/api/', cls: '', run: get(8080, 'http://127.0.0.1:8003/api/') }
-          ],
-          panes: [{ conf: true, bottom: true }, { log: 'proxy' }, { log: 8002 }, { log: 8004 }]
-        }
-      ]
-    },
-    {
       name: '프록시 부가 기능',
       scenes: [
         {
@@ -284,7 +289,7 @@
             { label: 'HTTP/1.1: 요청 세 개 (연결 하나를 유지)', cls: 'primary plain', run: function () { return runMultiProxy(true); } },
             { hint: '클라이언트 포트가 같으면 같은 연결이다. 백엔드와의 연결은 4초 안에 다시 누르면 보관한 것을 다시 쓴다' }
           ],
-          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
+          panes: [{ pool: true }, { log: 'proxy' }, { log: 8001 }]
         },
         {
           key: 'cache', tab: 'Response Caching', stage: 'proxy',
@@ -466,6 +471,7 @@
     box.textContent = '';
     logs = {};
     procView = null;
+    poolView = null;
     (scene.panes || []).forEach(function (p) {
       var term = el('div', 'term');
       var h = el('h3');
@@ -487,6 +493,12 @@
         h.appendChild(cmd);
         procView = { box: screen, cmd: cmd, note: p.note, target: null, seen: {}, gone: [] };
         pullProcs();
+      } else if (p.pool) {
+        h.appendChild(el('span', 'who', '프록시의 백엔드 목록과 연결 보관함'));
+        var poolCmd = el('span', 'cmd', '$ ls -l /proc/프록시 프로세스 번호/fd');
+        h.appendChild(poolCmd);
+        poolView = { box: screen, cmd: poolCmd, seen: {} };
+        pullPool();
       } else if (p.conf) {
         h.appendChild(el('span', 'who', '설정 파일'));
         h.appendChild(el('span', 'cmd', '$ cat demo/lab/proxy.conf'));
@@ -1776,6 +1788,85 @@
       : view.note));
   }
 
+  /* ---------- 프록시의 백엔드 목록과 연결 보관함: 프록시 프로세스의 fd 표를 /proc 에서 읽는다 ---------- */
+
+  var POOL_MAX = 4;       /* proxy/proxy.h 의 POOL_MAX: 백엔드마다 보관하는 연결의 최대 개수 */
+  var POOL_IDLE_SEC = 4;  /* POOL_IDLE_MS 4000: 이보다 오래 쉰 연결은 꺼낼 때 닫는다 */
+
+  function pullPool() {
+    var view = poolView;
+    if (!view || poolBusy) { return Promise.resolve(); }
+    poolBusy = true;
+    return call({ action: 'procs', name: 'proxy' }).then(function (r) {
+      if (poolView === view) { renderPool(view, r); }
+    }).catch(function () {}).then(function () { poolBusy = false; });
+  }
+
+  /*
+   * 프록시 프로세스의 fd 중 소켓을 상대 포트로 나눈다.
+   *   상대 포트가 백엔드 포트   → 백엔드와의 연결. 요청을 처리하는 중이 아니면 보관함에서 쉬는 연결이다
+   *   프록시 쪽 포트가 8080      → 클라이언트와의 연결
+   * 소켓의 상태(ESTABLISHED, CLOSE_WAIT)는 커널의 TCP 소켓 목록(/proc/net/tcp)에서 읽은 값이다.
+   */
+  function renderPool(view, r) {
+    var box = view.box;
+    box.textContent = '';
+    if (!r.up) {
+      box.appendChild(el('div', 'empty', '프록시 프로세스가 꺼져 있다'));
+      return;
+    }
+    view.cmd.textContent = '$ ls -l /proc/' + r.pid + '/fd';
+    var now = Date.now();
+    var byPort = {};
+    var clients = [];
+    var alive = {};
+    (r.fds || []).forEach(function (f) {
+      var m = /^(ESTABLISHED|상태 (\w+)) 127\.0\.0\.1:(\d+) <-> 127\.0\.0\.1:(\d+)$/.exec(f.sock || '');
+      if (!m) { return; }
+      var local = Number(m[3]);
+      var remote = Number(m[4]);
+      var key = f.fd + ':' + local + ':' + remote;
+      alive[key] = true;
+      if (!view.seen[key]) { view.seen[key] = now; }
+      var row = { fd: f.fd, local: local, remote: remote, state: m[2] || '01', since: view.seen[key] };
+      if (local === 8080) { clients.push(row); }
+      else if (PROXY_BACKENDS.indexOf(remote) >= 0) { (byPort[remote] = byPort[remote] || []).push(row); }
+    });
+    Object.keys(view.seen).forEach(function (key) { if (!alive[key]) { delete view.seen[key]; } });
+
+    PROXY_BACKENDS.forEach(function (port) {
+      var rows = byPort[port] || [];
+      var slots = '';
+      for (var i = 0; i < POOL_MAX; i++) { slots += i < rows.length ? '■' : '□'; }
+      var head = el('div', 'proc');
+      head.appendChild(document.createTextNode('백엔드 ' + port + '  '));
+      head.appendChild(el('span', excluded[port] ? 'bad' : 'good', excluded[port] ? '제외됨' : '살아 있음'));
+      head.appendChild(document.createTextNode('  보관함 ' + slots + ' ' + rows.length + '/' + POOL_MAX));
+      box.appendChild(head);
+      rows.forEach(function (row) {
+        /* 쉬기 시작한 때: 이 연결을 처음 본 때와 마지막 요청이 끝난 때 중 늦은 쪽 (0.3초마다 읽으므로 대략의 값이다) */
+        var idle = (now - Math.max(row.since, lastActive)) / 1000;
+        var line = el('div');
+        line.appendChild(document.createTextNode('  fd ' + row.fd + ' · '));
+        if (row.state === '08') {
+          line.appendChild(el('span', 'bad', 'CLOSE_WAIT · 백엔드가 5초 idle로 먼저 끊음 → 꺼낼 때 닫음'));
+        } else if (row.state !== '01') {
+          line.appendChild(el('span', 'note', '상태 ' + row.state));
+        } else {
+          line.appendChild(el('span', idle < POOL_IDLE_SEC ? 'good' : 'live',
+            'ESTABLISHED · 쉰 지 약 ' + idle.toFixed(1) + '초' + (idle < POOL_IDLE_SEC ? ' → 다시 쓸 수 있음' : ' → 4초 넘음, 꺼낼 때 닫음')));
+        }
+        box.appendChild(line);
+      });
+    });
+    var c = el('div', 'proc', '클라이언트와의 연결 ' + clients.length + '개');
+    box.appendChild(c);
+    clients.forEach(function (row) {
+      box.appendChild(el('div', 'live', '  fd ' + row.fd + ' (클라이언트 포트 ' + row.remote + ')'));
+    });
+    box.appendChild(el('div', 'note', '프록시 프로세스 ' + r.pid + '의 fd 표에서 읽은 소켓. 보관함은 백엔드마다 ' + POOL_MAX + '개까지, ' + POOL_IDLE_SEC + '초 넘게 쉰 연결은 꺼낼 때 닫는다.'));
+  }
+
   /* ---------- 시작 ---------- */
 
   buildCats();
@@ -1785,5 +1876,5 @@
   refreshStatus();
   setInterval(function () { if (!busy && !preparing) { refreshStatus(); pullLogs().catch(function () {}); } }, 2000);
   /* 프로세스 표는 자식 프로세스가 생겼다가 사라지는 짧은 순간을 보여 줘야 하므로 0.3초마다 읽는다 (표가 있는 장면에서만) */
-  setInterval(function () { pullProcs(); }, 300);
+  setInterval(function () { pullProcs(); pullPool(); }, 300);
 })();

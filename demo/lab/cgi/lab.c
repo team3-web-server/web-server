@@ -533,6 +533,8 @@ static void action_start(int port)
 
 /* ---------- action=procs: 프로세스 표 (좀비 프로세스가 남는지, 스레드가 몇 개인지) ---------- */
 
+static void print_fd_table(long pid);
+
 /* /proc/<pid>/stat 에서 상태 글자와 프로그램 이름을 읽는다. 읽지 못하면 0 */
 static int read_proc_state(long pid, char *state, char *comm, size_t comm_size)
 {
@@ -649,7 +651,11 @@ static void action_procs(const char *name)
     if (dir != NULL) {
         closedir(dir);
     }
-    printf("]}\n");
+    printf("]");
+    /* fds: 그 프로세스의 fd 표. 프록시라면 클라이언트와의 연결, 백엔드와의 연결(보관 중인 것 포함)이 소켓으로 보인다 */
+    printf(",\"fds\":");
+    print_fd_table(pid);
+    printf("}\n");
 }
 
 /* ---------- action=fds: 웹 서버 프로세스의 fd 표를 /proc 에서 읽는다 ---------- */
