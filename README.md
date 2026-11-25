@@ -48,7 +48,7 @@ C와 POSIX 소켓 API로 직접 만든 **웹 서버**와 **프록시**입니다.
 | ④ 죽은 백엔드 | 헬스 체크로 꺼진 백엔드를 빼고, 연결에 실패하면 바로 다음 백엔드로 다시 보냅니다(failover) | [단계 16](docs/step16.md) |
 | ⑤ 같은 응답 반복 | 설정한 경로의 응답을 프록시 메모리에 10초 동안 두고 다시 씁니다 | [단계 17](docs/step17.md), [단계 18](docs/step18.md) |
 
-![전체 구조: 클라이언트, Reverse Proxy, 백엔드 웹 서버 세 대](docs/images/readme-architecture.svg)
+![전체 구조: 클라이언트, Reverse Proxy, 백엔드 웹 서버 세 대. 정적 파일은 웹 서버가 읽어 보내고 /static/ 은 8002가 맡음](docs/images/readme-architecture.svg)
 
 ### 웹 서버 (`build/server`)
 
