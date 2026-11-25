@@ -41,6 +41,7 @@ int load_config(const char *path, struct proxy_config *cfg)
     }
 
     cfg->route_count = 0;
+    cfg->allowed_count = 0;
     cfg->cache_count = 0;
     char line[LINE_SIZE];
     int line_no = 0;
@@ -50,6 +51,24 @@ int load_config(const char *path, struct proxy_config *cfg)
         /* strtok은 줄을 공백으로 나눈 칸을 하나씩 돌려준다. 첫 칸이 없으면 빈 줄 */
         char *token = strtok(line, " \t\r\n");
         if (token == NULL || token[0] == '#') {
+            continue;
+        }
+        /* "allow 주소[:포트]": Forward Proxy 허용 목록에 한 칸을 더한다. 포트가 없으면 0(모든 포트) */
+        if (strcmp(token, "allow") == 0) {
+            token = strtok(NULL, " \t\r\n");
+            struct backend *allowed = &cfg->allowed[cfg->allowed_count];
+            if (token == NULL || cfg->allowed_count == MAX_ALLOWED) {
+                fprintf(stderr, "%s %d번째 줄: allow 뒤에 주소가 있어야 하고, %d개까지입니다\n", path, line_no, MAX_ALLOWED);
+                fclose(fp);
+                return -1;
+            }
+            allowed->port = 0;
+            if (sscanf(token, "%63[^:]:%d", allowed->host, &allowed->port) < 1) {
+                fprintf(stderr, "%s %d번째 줄: allow 주소[:포트] 형식이 아닙니다: %s\n", path, line_no, token);
+                fclose(fp);
+                return -1;
+            }
+            cfg->allowed_count++;
             continue;
         }
         /* "cache 접두사": 그 접두사로 시작하는 경로의 응답을 캐시에 저장한다 */
@@ -107,6 +126,20 @@ int is_cache_path(const struct proxy_config *cfg, const char *target)
 {
     for (int i = 0; i < cfg->cache_count; i++) {
         if (strncmp(target, cfg->cache_prefixes[i], strlen(cfg->cache_prefixes[i])) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int is_allowed(const struct proxy_config *cfg, const struct backend *dest)
+{
+    if (cfg->allowed_count == 0) {
+        return 1;
+    }
+    for (int i = 0; i < cfg->allowed_count; i++) {
+        const struct backend *allowed = &cfg->allowed[i];
+        if (strcmp(allowed->host, dest->host) == 0 && (allowed->port == 0 || allowed->port == dest->port)) {
             return 1;
         }
     }
@@ -697,6 +730,14 @@ static int proxy_request(int client_fd, struct proxy_config *cfg, const char *bu
             return 0;
         }
         dest = &forward_dest;
+        /* 허용 목록이 있으면 목록에 있는 서버로만 보낸다. 없는 서버면 연결하지 않고 403 */
+        if (!is_allowed(cfg, dest)) {
+            printf("[Forward] %s %s → 허용 목록에 없음 (403)\n", req.method, req.target);
+            free(copy.data);
+            free_request(&req);
+            send_error(client_fd, 403);
+            return 0;
+        }
         printf("[Forward] %s %s → %s:%d\n", req.method, req.target, dest->host, dest->port);
 
         /* 클라이언트가 정한 서버에 연결한다. 연결하지 못하면 502 Bad Gateway (대신 보낼 다른 서버가 없다) */

@@ -5,6 +5,7 @@
 #                 이어서 프록시 테스트(build/test_proxy, tests/run_proxy_tests.sh) 실행
 #   make asan   : -fsanitize=address,leak 로 같은 테스트를 빌드·실행
 #   make demo   : demo/ 의 시연용 프로그램 빌드 (build/listen_demo, build/connect_demo)
+#   make lab    : 데모 페이지(demo/lab)의 CGI 프로그램 빌드. 실행은 bash demo/lab/run.sh
 #   make clean  : build/ 와 www/cgi-bin/ 삭제
 # =====================================================================
 
@@ -32,7 +33,7 @@ PROXYSRCS := $(wildcard proxy/*.c)
 PROXYLIB  := proxy/proxy.c proxy/cache.c
 PROXYBIN  := $(BUILD)/proxy
 
-.PHONY: all test asan demo clean
+.PHONY: all test asan demo lab clean
 
 all: $(BIN) $(PROXYBIN) $(CGIBINS)
 
@@ -89,5 +90,30 @@ $(BUILD)/listen_demo: demo/listen_demo.c | $(BUILD)
 $(BUILD)/connect_demo: demo/connect_demo.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
+# 데모 페이지(Web Server Lab): 버튼이 부르는 CGI 프로그램을 페이지 폴더의 cgi-bin 아래에 빌드한다
+LABCGI := demo/lab/www/cgi-bin/lab
+
+# fail: 실패로 끝나는 CGI 프로그램 (상태 코드 500을 보여 주는 용도). 백엔드 8004의 폴더(www)에 둔다
+# slow: 3초 뒤에 응답하는 CGI 프로그램 (fork가 있을 때와 없을 때를 비교하는 용도)
+# build/proxy-nothread: 프록시를 -DNO_THREAD로 빌드한 비교용 실행 파일 (연결마다 스레드를 만들지 않는다)
+# build/server-nofork: 웹 서버를 -DNO_FORK로 빌드한 비교용 실행 파일 (연결을 자식 프로세스에게 맡기지 않는다)
+lab: all $(LABCGI) $(CGIDIR)/fail $(CGIDIR)/slow $(BUILD)/server-nofork $(BUILD)/proxy-nothread
+
+$(CGIDIR)/slow: demo/lab/cgi/slow.c | $(CGIDIR)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD)/server-nofork: $(SRCS) $(HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) -DNO_FORK $(SRCS) -o $@
+
+$(BUILD)/proxy-nothread: $(PROXYSRCS) proxy/proxy.h $(LIBSRCS) $(HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) -DNO_THREAD $(PROXYSRCS) $(LIBSRCS) -o $@
+
+$(CGIDIR)/fail: demo/lab/cgi/fail.c | $(CGIDIR)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(LABCGI): demo/lab/cgi/lab.c
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $< -o $@
+
 clean:
-	rm -rf $(BUILD) $(CGIDIR)
+	rm -rf $(BUILD) $(CGIDIR) demo/lab/www/cgi-bin demo/lab/run
