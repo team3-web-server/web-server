@@ -1,6 +1,6 @@
 # web-server
 
-C와 POSIX 소켓 API로 직접 만든 **웹 서버**와 **프록시**입니다. 웹 서버는 정적 파일과 CGI 결과를 HTTP로 돌려주고, 프록시는 여러 대의 웹 서버 앞에서 요청을 나눠 보냅니다.
+C와 POSIX 소켓 API로 직접 만든 **웹 서버**와 **프록시**입니다. 웹 서버는 정적 파일과 CGI 결과를 HTTP로 돌려주고, 프록시는 여러 대의 웹 서버 앞에서 요청을 나눠 보냅니다. 버튼을 누르면 실제 요청을 보내고 각 프로세스가 무엇을 했는지 보여 주는 데모 페이지 [Web Server Lab](#web-server-lab-데모-페이지)도 들어 있습니다.
 
 ## 팀
 
@@ -61,16 +61,45 @@ C와 POSIX 소켓 API로 직접 만든 **웹 서버**와 **프록시**입니다.
 ### 프록시 (`build/proxy`)
 
 - **Reverse Proxy**: [`proxy.conf`](proxy.conf)의 경로 접두사로 백엔드를 고릅니다. 맞는 규칙이 없으면 404, 살아 있는 백엔드가 없으면 503입니다.
-- **Forward Proxy**: 요청 대상이 `http://`로 시작하면 클라이언트가 적은 서버로 보냅니다. 연결하지 못하면 502입니다.
+- **Forward Proxy**: 요청 대상이 `http://`로 시작하면 클라이언트가 적은 서버로 보냅니다. 연결하지 못하면 502입니다. 설정 파일에 `allow 주소[:포트]` 줄(최대 8개)이 있으면 목록에 있는 서버로만 보내고 나머지는 403입니다. 주소는 적힌 글자 그대로 비교하고, `allow` 줄이 없으면 모든 서버로 보냅니다.
 - **헬스 체크**: 모든 백엔드에 `connect`해 보고 2초 쉬기를 반복합니다.
 - **캐시**: `cache` 접두사에 맞는 `GET`의 200 응답을 저장합니다. 사본 하나는 100KiB, 전체는 1MiB까지입니다.
 - **연결 보관함**: 백엔드마다 쉬는 연결을 4개까지 보관하고, 본문 없는 `GET`에 다시 씁니다.
 
 ## 2. 실행 화면
 
+### Web Server Lab (데모 페이지)
+
+[`demo/lab`](demo/lab/README.md)의 발표용 페이지입니다. 버튼을 누르면 CGI 프로그램이 웹 서버나 프록시에 실제 요청을 보내고, 화면에는 주고받은 요청과 응답, 각 프로세스의 로그가 함께 나옵니다. 실행 방법은 [데모 페이지 실행](#데모-페이지-실행)에 있습니다.
+
+![Round-Robin 장면: /api/ 요청 여섯 번이 백엔드 8001과 8003에 세 번씩 간 화면](docs/images/readme-lab-round-robin.png)
+
+**Round-Robin.** `/api/` 요청 여섯 번이 8001과 8003에 세 번씩 갔습니다. 프록시 로그에서는 보관한 연결을 다시 쓴 것도 보입니다.
+
+![fork 없음 장면: 느린 요청 뒤에 보낸 빠른 요청이 2601ms 걸린 화면](docs/images/readme-lab-fork.png)
+
+**fork 있음과 없음.** `fork`를 뺀 비교용 빌드에서는 느린 요청이 끝날 때까지 다음 연결을 받지 못해, 빠른 요청이 2601ms 걸렸습니다.
+
+![허용 목록 장면: 목록에 없는 서버로 보낸 Forward 요청이 403 Forbidden을 받은 화면](docs/images/readme-lab-allow.png)
+
+**Forward Proxy 허용 목록.** 목록에 없는 서버로 보내 달라는 요청에는 연결하지 않고 403을 돌려줍니다.
+
+| 주제 | 장면 |
+| --- | --- |
+| 소켓과 TCP | Socket과 fd, TCP Handshake와 레이어 |
+| HTTP | HTTP GET, 상태 코드, POST, HTTP/1.0과 HTTP/1.1 |
+| 동적 요청과 동시성 | 정적과 동적(CGI), fork 있음과 없음, 스레드 있음과 없음 |
+| Forward Proxy | Forward Proxy, 허용 목록 |
+| Reverse Proxy | Reverse Proxy, Round-Robin, Health Check와 Failover |
+| 프록시 부가 기능 | keep-alive, Response Caching |
+
+### 브라우저로 연 웹 서버
+
 ![브라우저로 웹 서버를 연 화면: team3 웹 서버 제목, 자바스크립트 실행 결과, PNG와 JPG 이미지](docs/images/readme-demo-page.png)
 
 웹 서버를 띄우고 브라우저로 연 화면입니다. HTML, CSS, JavaScript, PNG, JPG 파일을 각각 알맞은 `Content-Type`으로 보내야 이렇게 보입니다.
+
+### 프록시 터미널 출력
 
 ![프록시에 요청을 보내 라운드로빈, 캐시, 헬스 체크를 확인한 실제 출력](docs/images/readme-run.svg)
 
@@ -96,7 +125,7 @@ make
 ./build/server
 ```
 
-8080번 포트에서 `./www` 폴더를 보여 줍니다. 포트와 폴더는 `./build/server 9000 ./www`처럼 바꿀 수 있습니다. 브라우저에서 `http://localhost:8080/`을 열면 위 실행 화면이 나옵니다.
+8080번 포트에서 `./www` 폴더를 보여 줍니다. 포트와 폴더는 `./build/server 9000 ./www`처럼 바꿀 수 있습니다. 브라우저에서 `http://localhost:8080/`을 열면 [브라우저로 연 웹 서버](#브라우저로-연-웹-서버) 화면이 나옵니다.
 
 ### 3단계: 새 터미널에서 요청 보내기
 
@@ -157,12 +186,30 @@ make asan    # 같은 테스트를 AddressSanitizer·LeakSanitizer로
 
 테스트마다 `PASS` 또는 `FAIL`이 한 줄씩 나옵니다. 테스트는 18000번대 포트를 씁니다.
 
-> curl 8.18.0에서는 연결 재사용을 확인하는 검사가 웹 서버와 프록시에 하나씩 `FAIL`이 납니다. 테스트는 curl 출력에서 `Re-using existing`을 찾는데, 이 버전은 `Reusing existing`이라고 출력하기 때문입니다. `make test`와 `make asan`은 웹 서버 테스트에서 멈추므로, 프록시 테스트는 `bash tests/run_proxy_tests.sh build/proxy build/server build/test_proxy`로 따로 실행합니다.
+### 데모 페이지 실행
+
+위 단계에서 띄운 서버와 프록시를 모두 끈 뒤 실행합니다.
+
+```bash
+bash demo/lab/run.sh
+```
+
+필요한 프로그램을 빌드하고 서버와 프록시를 한 번에 띄웁니다. 브라우저에서 `http://localhost:8000/`을 열고, 끝낼 때는 `Ctrl+C`를 누릅니다. 8000~8005, 8080, 8081 포트가 비어 있어야 합니다.
+
+TCP Handshake와 레이어 장면에는 `tcpdump`와 패킷 캡처 권한이 필요합니다. 한 번만 실행해 두면 되고, 하지 않아도 다른 장면은 동작합니다.
+
+```bash
+which tcpdump || sudo apt install -y tcpdump
+sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
+```
+
+> 로컬 발표용입니다. 서버와 프록시는 모든 IPv4 주소(`0.0.0.0`)에서 연결을 받고, 데모 페이지는 백엔드 프로세스를 끄고 켤 수 있습니다. 다른 사람이 접속할 수 있는 네트워크에서는 띄워 두지 마세요.
 
 ## 4. 아직 없는 것
 
 - HTTPS와 `CONNECT` 메서드. Forward Proxy는 `http://`만 됩니다.
 - IPv6. IPv4만 됩니다.
+- 접속하는 쪽의 제한. 기본 설정 [`proxy.conf`](proxy.conf)에는 `allow` 줄이 없어, 프록시에 접속할 수 있으면 누구나 Forward Proxy로 어느 서버에든 요청을 보낼 수 있습니다.
 - 웹 서버의 `HEAD`, `PUT`, `DELETE` 등 `GET`·`POST` 밖의 메서드.
 - 동시에 만드는 자식 프로세스 수와 스레드 수의 상한.
 - 프록시의 `X-Forwarded-For` 헤더, chunked 응답 처리.
@@ -178,4 +225,5 @@ make asan    # 같은 테스트를 AddressSanitizer·LeakSanitizer로
 | 동시 연결과 안전 종료 | [단계 9·10](docs/step9-10.md) |
 | 프록시, 스레드, keep-alive | [단계 11~13](docs/step11-13.md), [단계 14](docs/step14.md), [단계 15](docs/step15.md) |
 | 헬스 체크, 캐시, 연결 보관함 | [단계 16](docs/step16.md), [단계 17](docs/step17.md), [단계 18](docs/step18.md), [단계 19](docs/step19.md) |
+| 데모 페이지의 장면, 프로세스, 값의 출처 | [demo/lab/README.md](demo/lab/README.md) |
 | 대기열·블로킹 시연 도구 | [demo/README.md](demo/README.md) |
