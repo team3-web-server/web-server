@@ -47,6 +47,8 @@
   var procBusy = false;
   var poolView = null;   /* 프록시의 백엔드 목록과 연결 보관함 칸: { box, cmd, seen } */
   var poolBusy = false;
+  var tally = { ok: null, proxies: 0, servers: 0, downs: [] }; /* 위쪽 칩에 적는 종류별 실행 중인 프로세스 수 */
+  var clients = 0;       /* 지금 요청을 보내고 있는 CGI 프로세스 lab의 수 (클라이언트) */
   var lastActive = 0;    /* CGI 프로세스가 마지막 요청의 응답을 다 받은 시각. 보관한 연결이 쉬기 시작한 때로 본다 */
   var current = null;
   var directPort = 8004;
@@ -64,12 +66,17 @@
     var query = Object.keys(params).map(function (k) {
       return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
     }).join('&');
+    /* 요청을 보내는 동작(send, multi, burst, fds)의 CGI 프로세스 lab이 이 데모의 클라이언트다. 실행 중인 동안만 센다 */
+    var isClient = /^(send|multi|burst|fds)$/.test(params.action);
+    if (isClient) { clients += 1; paintClients(); }
+    function done() { if (isClient) { clients -= 1; paintClients(); } }
     return fetch(CGI + '?' + query, { cache: 'no-store' }).then(function (r) {
+      done();
       if (!r.ok) { throw new Error('CGI 응답 ' + r.status); }
       /* 요청을 실제로 보낸 동작이 끝난 시각. 화면의 점은 그 뒤에 움직이므로, 점이 멈춘 때가 아니라 이때부터 연결이 쉰다 */
       if (params.action === 'send' || params.action === 'multi' || params.action === 'burst') { lastActive = Date.now(); }
       return r.json();
-    });
+    }, function (e) { done(); throw e; });
   }
 
   function sleep(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
@@ -696,17 +703,41 @@
       var proxy = $('node-proxy');
       proxy.classList.toggle('up', s.proxy.up);
       proxy.classList.toggle('down', !s.proxy.up);
-      var link = $('link-state');
-      var downs = s.backends.filter(function (b) { return !b.up; }).map(function (b) { return b.port; });
-      if (!s.proxy.up) { downs.unshift('프록시 8080'); }
-      link.textContent = downs.length ? '꺼진 프로세스: ' + downs.join(', ') : '프로세스 ' + (s.backends.length + 1) + '개 실행 중';
-      link.className = 'link-state ' + (downs.length ? 'bad' : 'ok');
+      /*
+       * 위쪽 칩: 실행 중인 프로세스를 종류별로 센다.
+       *   프록시  : 8080, 8081(스레드 없는 빌드)
+       *   웹 서버 : 8001~8005와, 이 페이지와 CGI 프로그램을 서빙하는 8000 (이 응답이 왔으므로 8000은 실행 중이다)
+       *   클라이언트: 버튼을 누를 때 생겨 요청을 보내고 끝나는 CGI 프로세스 lab. paintClients가 요청 중인 개수를 적는다
+       */
+      var proxyPorts = [8080, 8081];
+      tally.proxies = (s.proxy.up ? 1 : 0) + s.backends.filter(function (b) { return b.port === 8081 && b.up; }).length;
+      tally.proxyTotal = proxyPorts.length;
+      var servers = s.backends.filter(function (b) { return proxyPorts.indexOf(b.port) === -1; });
+      tally.servers = 1 + servers.filter(function (b) { return b.up; }).length;
+      tally.serverTotal = 1 + servers.length;
+      tally.downs = s.backends.filter(function (b) { return !b.up; }).map(function (b) { return b.port; });
+      if (!s.proxy.up) { tally.downs.unshift(8080); }
+      tally.ok = true;
+      paintClients();
       paintStatus();
     }).catch(function () {
-      var link = $('link-state');
-      link.textContent = 'CGI 프로그램에 연결할 수 없음';
-      link.className = 'link-state bad';
+      tally.ok = false;
+      paintClients();
     });
+  }
+
+  /* 위쪽 칩의 글자. 요청을 보내는 CGI 프로세스 lab의 수(clients)가 바뀔 때도 다시 적는다 */
+  function paintClients() {
+    var link = $('link-state');
+    if (!tally.ok) {
+      link.textContent = tally.ok === false ? 'CGI 프로그램에 연결할 수 없음' : '연결 확인 중';
+      link.className = 'link-state' + (tally.ok === false ? ' bad' : '');
+      return;
+    }
+    link.textContent = '프록시 ' + tally.proxies + ' · 웹 서버 ' + tally.servers + ' · 클라이언트 ' + clients +
+      (tally.downs.length ? ' (꺼짐: ' + tally.downs.join(', ') + ')' : '');
+    link.title = '프록시: 8080, 8081 · 웹 서버: 8000~8005 · 클라이언트: 버튼을 누를 때 생겨 요청을 보내고 끝나는 CGI 프로세스 lab';
+    link.className = 'link-state ' + (tally.downs.length ? 'bad' : 'ok');
   }
 
   function toggleBackend(port) {
