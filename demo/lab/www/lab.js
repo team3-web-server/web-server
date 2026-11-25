@@ -67,7 +67,7 @@
     return fetch(CGI + '?' + query, { cache: 'no-store' }).then(function (r) {
       if (!r.ok) { throw new Error('CGI 응답 ' + r.status); }
       /* 요청을 실제로 보낸 동작이 끝난 시각. 화면의 점은 그 뒤에 움직이므로, 점이 멈춘 때가 아니라 이때부터 연결이 쉰다 */
-      if (params.action === 'send' || params.action === 'multi') { lastActive = Date.now(); }
+      if (params.action === 'send' || params.action === 'multi' || params.action === 'burst') { lastActive = Date.now(); }
       return r.json();
     });
   }
@@ -287,7 +287,8 @@
           controls: [
             { label: 'HTTP/1.0: 요청 세 개 (요청마다 새 연결)', cls: 'plain', run: function () { return runMultiProxy(false); } },
             { label: 'HTTP/1.1: 요청 세 개 (연결 하나를 유지)', cls: 'primary plain', run: function () { return runMultiProxy(true); } },
-            { hint: '클라이언트 포트가 같으면 같은 연결이다. 백엔드와의 연결은 4초 안에 다시 누르면 보관한 것을 다시 쓴다' }
+            { label: '동시에 요청 12개 (보관함 채우기)', cls: 'primary plain', run: function () { return runBurst(12); } },
+            { hint: '백엔드와의 연결은 4초 안에 다시 누르면 보관한 것을 다시 쓴다' }
           ],
           panes: [{ pool: true }, { log: 'proxy' }, { log: 8001 }]
         },
@@ -1614,6 +1615,63 @@
       showWhy(keep
         ? '클라이언트 프로세스는 connect를 한 번만 했다(클라이언트 포트가 같다). 프록시 프로세스는 요청마다 백엔드를 다시 고르고, 그 백엔드의 보관함에 쉬는 연결이 있으면 connect 없이 그것을 다시 썼다. 프록시 로그의 [Pool] 줄과, 백엔드 로그의 "이 연결의 2번째 요청"을 확인한다.'
         : '클라이언트 프로세스가 요청마다 connect를 새로 했다(클라이언트 포트가 요청마다 다르다). 프록시 프로세스는 응답 뒤 클라이언트와의 연결을 닫았다. 백엔드와의 연결은 클라이언트와 상관없이 보관함에서 다시 쓴다.');
+    }).then(refreshStatus);
+  }
+
+  /* ---------- keep-alive: 요청 n개를 한꺼번에 보내 보관함에 연결 여러 개가 들어가게 한다 ---------- */
+
+  function runBurst(n) {
+    setStage('proxy');
+    clearMarks();
+    showWhy('');
+    setChip('client-chip', '', '');
+    setChip('proxy-note', '', '');
+    var result;
+    var sent = $('sent');
+    var got = $('received');
+    return pullLogs().then(function () {
+      return call({ action: 'burst', n: n });
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      result = r;
+      return sleep(150).then(pullLogs);
+    }).then(function (fresh) {
+      /* 프록시 로그의 [Reverse], [Pool] 줄을 백엔드별로 센다 */
+      var stat = {};
+      function at(port) { return stat[port] || (stat[port] = { req: 0, fresh: 0, reused: 0, kept: 0, full: 0 }); }
+      (fresh.proxy || []).forEach(function (line) {
+        var m = /^\[Reverse\] \S+ \S+ → 127\.0\.0\.1:(\d+)$/.exec(line);
+        if (m) { at(m[1]).req += 1; return; }
+        m = /^\[Pool\] 127\.0\.0\.1:(\d+) (.*)$/.exec(line);
+        if (!m) { return; }
+        if (m[2].indexOf('새로 connect') === 0) { at(m[1]).fresh += 1; }
+        else if (m[2].indexOf('보관한 연결을 다시 씀') === 0) { at(m[1]).reused += 1; }
+        else if (m[2].indexOf('연결을 닫지 않고 보관') === 0) { at(m[1]).kept += 1; }
+        else if (m[2].indexOf('보관함이 꽉 차서') === 0) { at(m[1]).full += 1; }
+      });
+      sent.className = '';
+      sent.textContent = '';
+      got.className = '';
+      got.textContent = '';
+      $('res-meta').textContent = '→ 8080 · 연결 ' + n + '개 · ' + result.total_ms + 'ms';
+      sent.appendChild(el('span', 'first', result.sent.split('\r\n')[0] + '  × ' + n + '\n'));
+      sent.appendChild(el('span', 'len', '  연결 ' + n + '개를 먼저 맺고(connect), 요청 ' + n + '개를 한꺼번에 write\n'));
+      got.appendChild(el('span', result.good === n ? 'status-ok' : 'status-bad', '200 OK ' + result.good + '개 / ' + n + '개'));
+      got.appendChild(el('span', 'len', '  ' + result.total_ms + 'ms\n'));
+      var ports = Object.keys(stat).sort();
+      var parts = [];
+      ports.forEach(function (port) {
+        var one = stat[port];
+        got.appendChild(el('span', 'cut', '  백엔드 ' + port + ': 요청 ' + one.req + '개 · 새로 connect ' + one.fresh + '번 · 보관한 연결 다시 씀 ' + one.reused + '번 · 보관함에 넣음 ' + one.kept + '번 · 꽉 차서 닫음 ' + one.full + '번\n'));
+        parts.push('백엔드 ' + port + ' 새로 connect ' + one.fresh + '번, 다시 씀 ' + one.reused + '번, 보관함에 넣음 ' + one.kept + '번, 꽉 차서 닫음 ' + one.full + '번');
+        if (counts[port] !== undefined) { counts[port] += one.req; }
+        if ($('node-' + port)) { $('node-' + port).classList.add('hit'); markEdge('edge-' + port, 'res'); }
+      });
+      markEdge('edge-client', 'res');
+      paintStatus();
+      setChip('client-chip', '200 OK × ' + result.good, result.good === n ? 'ok' : 'bad');
+      setChip('proxy-note', '연결 스레드 ' + n + '개가 같은 때에 처리', 'reverse');
+      showWhy('요청 ' + n + '개가 거의 같은 때에 와서, 프록시의 연결 스레드 ' + n + '개가 각자 백엔드와의 연결이 필요했다. 프록시 로그에서 센 값: ' + parts.join(' / ') + '. 보관함은 백엔드마다 4개까지다 (POOL_MAX 4).');
     }).then(refreshStatus);
   }
 

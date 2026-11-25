@@ -1022,6 +1022,62 @@ static void action_multi(int port, int keep)
     printf("],\"connections\":%d,\"total_ms\":%.2f}\n", connections, elapsed_ms(&start));
 }
 
+/*
+ * action=burst: 프록시(8080)에 연결 n개를 먼저 맺고, 그 연결들에 요청을 한꺼번에 쓴 뒤 응답을 차례로 읽는다.
+ * 프록시의 연결 스레드 n개가 같은 때에 백엔드와의 연결을 필요로 하게 되어, 보관함에 여러 연결이 들어가는 것을 볼 수 있다.
+ * slow가 1이면 3초 걸리는 /cgi-bin/slow 를 요청한다(모든 요청이 확실히 겹친다). 아니면 /api/ 를 요청한다.
+ */
+#define BURST_MAX 16
+static void action_burst(int n, int slow)
+{
+    if (n < 1 || n > BURST_MAX) {
+        json_error("n은 1~16입니다");
+        return;
+    }
+    signal(SIGPIPE, SIG_IGN);
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    const char *request = slow ? "GET /cgi-bin/slow HTTP/1.0\r\n\r\n" : "GET /api/ HTTP/1.0\r\n\r\n";
+    size_t request_len = strlen(request);
+
+    int fds[BURST_MAX];
+    for (int i = 0; i < n; i++) {
+        fds[i] = connect_local(PROXY_PORT);
+        if (fds[i] != -1) {
+            struct timeval timeout = {10, 0};
+            setsockopt(fds[i], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        if (fds[i] != -1 && write(fds[i], request, request_len) != (ssize_t)request_len) {
+            close(fds[i]);
+            fds[i] = -1;
+        }
+    }
+    json_header();
+    printf("{\"ok\":true,\"n\":%d,\"sent\":", n);
+    json_string(request, request_len);
+    printf(",\"requests\":[");
+    int good = 0;
+    for (int i = 0; i < n; i++) {
+        char first[128] = "";
+        long bytes = -1;
+        int port = -1;
+        if (fds[i] != -1) {
+            port = local_port(fds[i]);
+            bytes = read_one_response(fds[i], first, sizeof(first));
+            close(fds[i]);
+        }
+        if (strstr(first, " 200 ") != NULL) {
+            good++;
+        }
+        printf("%s{\"status_line\":", i > 0 ? "," : "");
+        json_string(first, strlen(first));
+        printf(",\"bytes\":%ld,\"client_port\":%d}", bytes, port);
+    }
+    printf("],\"good\":%d,\"total_ms\":%.2f}\n", good, elapsed_ms(&start));
+}
+
 /* path 파일을 from 바이트 위치부터 최대 max바이트 읽어 {"next":위치,"text":"..."}로 출력한다 */
 static void send_file_part(const char *path, long from, size_t max)
 {
@@ -1098,6 +1154,13 @@ int main(void)
         }
         int keep = get_param(query, "keep", value, sizeof(value)) == 0 && strcmp(value, "1") == 0;
         action_multi(port, keep);
+    } else if (strcmp(action, "burst") == 0) {
+        int n = 8;
+        if (get_param(query, "n", value, sizeof(value)) == 0) {
+            n = (int)strtol(value, NULL, 10);
+        }
+        int slow = get_param(query, "slow", value, sizeof(value)) == 0 && strcmp(value, "1") == 0;
+        action_burst(n, slow);
     } else if (strcmp(action, "fds") == 0) {
         int port = 8004;
         if (get_param(query, "port", value, sizeof(value)) == 0) {

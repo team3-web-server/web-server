@@ -78,7 +78,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
 | 파일 | 내용 |
 |---|---|
 | `demo/lab/run.sh` | 빌드(`make lab`)하고 프로세스 일곱 개를 띄운다 |
-| `demo/lab/cgi/lab.c` | CGI 프로그램. `action=send`, `multi`, `fds`, `procs`, `status`, `stop`, `start`, `log`, `conf` |
+| `demo/lab/cgi/lab.c` | CGI 프로그램. `action=send`, `multi`, `burst`, `fds`, `procs`, `status`, `stop`, `start`, `log`, `conf` |
 | `demo/lab/www/index.html`, `lab.css`, `lab.js` | 페이지. 장면의 글과 버튼은 `lab.js`의 `GROUPS`에 있다 |
 
 ## 주의
