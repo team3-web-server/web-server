@@ -138,7 +138,7 @@ send_raw() {
 }
 count_raw() { grep -c "$1" "$tmp/raw.out"; }
 
-if curl -sv --noproxy '*' -o /dev/null -o /dev/null "http://127.0.0.1:$pport/static/who.txt" "http://127.0.0.1:$pport/static/who.txt" 2>&1 | grep -qi 're-using existing'; then
+if curl -sv --noproxy '*' -o /dev/null -o /dev/null "http://127.0.0.1:$pport/static/who.txt" "http://127.0.0.1:$pport/static/who.txt" 2>&1 | grep -qiE 're-?using existing'; then
   pass "curl이 두 번째 요청에 프록시와의 연결을 다시 씀"
 else
   bad "curl이 두 번째 요청에 프록시와의 연결을 다시 쓰지 않음"

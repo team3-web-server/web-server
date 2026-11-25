@@ -281,7 +281,8 @@ send_raw 'GET /nope.html HTTP/1.1\r\nHost: t\r\n\r\nGET /index.html HTTP/1.1\r\n
 if [ "$(count_in_resp '^HTTP/1.1 ')" -eq 1 ] && grep -q '404 Not Found' "$resp"; then pass "에러 응답(404) 뒤에는 연결을 닫음"; else bad "에러 응답 뒤에 연결을 닫지 않음"; fi
 
 # curl은 URL을 두 개 주면 같은 서버에는 연결을 다시 쓴다. -v 출력의 "Re-using existing connection"으로 확인한다
-if curl -sv --noproxy '*' -o /dev/null -o /dev/null "http://127.0.0.1:$port/index.html" "http://127.0.0.1:$port/style.css" 2>&1 | grep -qi 're-using existing'; then
+# (curl 8.18.0은 "Reusing existing"이라고 출력한다. 두 표기를 모두 찾는다)
+if curl -sv --noproxy '*' -o /dev/null -o /dev/null "http://127.0.0.1:$port/index.html" "http://127.0.0.1:$port/style.css" 2>&1 | grep -qiE 're-?using existing'; then
   pass "curl이 두 번째 요청에 연결을 다시 씀"
 else
   bad "curl이 두 번째 요청에 연결을 다시 쓰지 않음"
