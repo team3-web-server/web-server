@@ -37,8 +37,8 @@
             <line id="edge-direct" class="only-direct" x1="190" y1="190" x2="600" y2="190"/>
           </g>
           <text class="route only-proxy" x="600" y="92">/api/</text>
-          <text class="route only-proxy" x="640" y="212">/static/</text>
-          <text class="route only-proxy" x="622" y="302">/cgi-bin/</text>
+          <text class="route only-proxy r-other" x="640" y="212">/static/</text>
+          <text class="route only-proxy r-other" x="622" y="302">/cgi-bin/</text>
 
           <g class="node" id="node-client">
             <rect x="30" y="150" width="160" height="80" rx="12"/>
@@ -101,8 +101,11 @@
           </defs>
           <g id="seq" class="only-seq"></g>
 
-          <circle id="dot" class="dot hidden" r="9" cx="110" cy="190"/>
-          <circle id="dot2" class="dot hidden" r="9" cx="110" cy="190"/>
+          <!-- 헬스 체크 연결을 나타내는 작은 점들 (lab.js가 넣고 뺀다) -->
+          <g id="probes" class="only-proxy"></g>
+          <!-- 요청 하나를 나타내는 점. 이름표가 있으면 동그라미 대신 이름이 적힌 알약 모양으로 그린다 -->
+          <g id="dot" class="dot hidden" transform="translate(190,190)"><rect class="pill" x="-30" y="-11" width="60" height="22" rx="11"/><circle r="9"/><text y="4.5"></text></g>
+          <g id="dot2" class="dot hidden" transform="translate(190,190)"><rect class="pill" x="-30" y="-11" width="60" height="22" rx="11"/><circle r="9"/><text y="4.5"></text></g>
         </svg>
       </div>
 

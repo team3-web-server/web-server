@@ -531,6 +531,127 @@ static void action_start(int port)
 }
 
 
+/* ---------- action=procs: 프로세스 표 (좀비 프로세스가 남는지, 스레드가 몇 개인지) ---------- */
+
+/* /proc/<pid>/stat 에서 상태 글자와 프로그램 이름을 읽는다. 읽지 못하면 0 */
+static int read_proc_state(long pid, char *state, char *comm, size_t comm_size)
+{
+    char path[64];
+    char line[512];
+    snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL) {
+        return 0;
+    }
+    int ok = 0;
+    if (fgets(line, sizeof(line), fp) != NULL) {
+        char *open_paren = strchr(line, '(');
+        char *close_paren = strrchr(line, ')');
+        if (open_paren != NULL && close_paren != NULL && close_paren > open_paren && close_paren[1] == ' ') {
+            *close_paren = '\0';
+            snprintf(comm, comm_size, "%s", open_paren + 1);
+            *state = close_paren[2];
+            ok = 1;
+        }
+    }
+    fclose(fp);
+    return ok;
+}
+
+/*
+ * 부모가 parent인 프로세스를 모두 적는다. find_children과 달리 좀비 프로세스(상태 Z)도 넣는다:
+ * 끝났지만 부모가 waitpid로 거두지 않은 프로세스는 /proc 에 상태 Z로 남고, 부모가 거두면 /proc 에서 사라진다.
+ * depth가 남아 있으면 그 자식들(웹 서버의 자식 프로세스가 실행한 CGI 프로세스)도 적는다.
+ */
+static void print_children(long parent, int depth)
+{
+    printf("[");
+    DIR *dir = opendir("/proc");
+    int count = 0;
+    struct dirent *entry;
+    while (dir != NULL && (entry = readdir(dir)) != NULL) {
+        char *end;
+        long pid = strtol(entry->d_name, &end, 10);
+        if (*end != '\0' || pid <= 0) {
+            continue;
+        }
+        char path[64];
+        char line[512];
+        snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
+        FILE *fp = fopen(path, "r");
+        if (fp == NULL) {
+            continue;
+        }
+        long ppid = -1;
+        if (fgets(line, sizeof(line), fp) != NULL) {
+            const char *close_paren = strrchr(line, ')');
+            if (close_paren != NULL) {
+                sscanf(close_paren + 1, " %*c %ld", &ppid);
+            }
+        }
+        fclose(fp);
+        if (ppid != parent) {
+            continue;
+        }
+        char state = '?';
+        char comm[64] = "";
+        if (!read_proc_state(pid, &state, comm, sizeof(comm))) {
+            continue;
+        }
+        printf("%s{\"pid\":%ld,\"state\":\"%c\",\"comm\":", count++ > 0 ? "," : "", pid, state);
+        json_string(comm, strlen(comm));
+        if (depth > 0) {
+            printf(",\"children\":");
+            print_children(pid, depth - 1);
+        }
+        printf("}");
+    }
+    if (dir != NULL) {
+        closedir(dir);
+    }
+    printf("]");
+}
+
+/*
+ * action=procs: 이름(백엔드 포트 번호 또는 proxy)의 프로세스에 대해
+ *   children: 그 프로세스의 자식 프로세스와 손자 프로세스 (번호, 상태 글자, 프로그램 이름)
+ *   threads : 그 프로세스 안의 스레드 (/proc/<pid>/task 의 항목. 스레드 번호가 프로세스 번호와 같은 것이 main 스레드)
+ */
+static void action_procs(const char *name)
+{
+    long pid = read_pid(name);
+    char state = '?';
+    char comm[64] = "";
+    if (pid <= 0 || !read_proc_state(pid, &state, comm, sizeof(comm))) {
+        json_header();
+        printf("{\"ok\":true,\"up\":false}\n");
+        return;
+    }
+    json_header();
+    printf("{\"ok\":true,\"up\":true,\"pid\":%ld,\"state\":\"%c\",\"comm\":", pid, state);
+    json_string(comm, strlen(comm));
+    printf(",\"children\":");
+    print_children(pid, 1);
+    printf(",\"threads\":[");
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%ld/task", pid);
+    DIR *dir = opendir(path);
+    int count = 0;
+    struct dirent *entry;
+    while (dir != NULL && (entry = readdir(dir)) != NULL) {
+        char *end;
+        long tid = strtol(entry->d_name, &end, 10);
+        if (*end != '\0' || tid <= 0) {
+            continue;
+        }
+        printf("%s%ld", count++ > 0 ? "," : "", tid);
+    }
+    if (dir != NULL) {
+        closedir(dir);
+    }
+    printf("]}\n");
+}
+
 /* ---------- action=fds: 웹 서버 프로세스의 fd 표를 /proc 에서 읽는다 ---------- */
 
 /*
@@ -1000,6 +1121,21 @@ int main(void)
         }
         snprintf(path, sizeof(path), RUN_DIR "/%s.log", name);
         send_file_part(path, from, LOG_CHUNK_MAX);
+    } else if (strcmp(action, "procs") == 0) {
+        /* name: proxy 또는 백엔드 포트 번호 (log와 같은 규칙) */
+        char name[16];
+        if (get_param(query, "name", name, sizeof(name)) == -1) {
+            snprintf(name, sizeof(name), "8004");
+        }
+        if (strcmp(name, "proxy") != 0) {
+            int port = (int)strtol(name, NULL, 10);
+            if (find_backend_root(port) == NULL) {
+                json_error("name은 proxy 또는 백엔드 포트 번호입니다");
+                return 0;
+            }
+            snprintf(name, sizeof(name), "%d", port);
+        }
+        action_procs(name);
     } else if (strcmp(action, "conf") == 0) {
         send_file_part("demo/lab/proxy.conf", 0, LOG_CHUNK_MAX);
     } else {

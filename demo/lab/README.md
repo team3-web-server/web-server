@@ -8,7 +8,7 @@
 | 소켓과 TCP | Socket과 fd, TCP Handshake와 레이어 |
 | HTTP | HTTP GET, 상태 코드(13개), POST, HTTP/1.0과 HTTP/1.1 |
 | 동적 요청과 동시성 | 정적과 동적 (CGI), fork 있음과 없음, 스레드 있음과 없음 |
-| Reverse Proxy | Reverse Proxy, Round-Robin, Failover와 503, Health Check |
+| Reverse Proxy | Reverse Proxy, Round-Robin, Health Check와 Failover |
 | Forward Proxy | Forward Proxy, 허용 목록 |
 | 프록시 부가 기능 | keep-alive, Response Caching |
 
@@ -55,6 +55,9 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
 | fd 표 | `/proc/프로세스 번호/fd` (소켓의 상태와 주소는 `/proc/net/tcp`) |
 | 켜짐, 꺼짐 표시 | `/proc/프로세스 번호/stat` |
 | fork 있음과 없음의 시간 | 8004(fork)와 8005(fork 없음)에 같은 요청 두 개를 보내 잰 값 |
+| 점의 이름표 (자식 A, 자식 B) | 웹 서버 로그의 "자식 프로세스 N에게 연결을 맡겼습니다" 줄을 온 순서대로 읽은 것. 스레드 A의 스레드 번호는 `/proc/<프록시>/task` 에서 읽는다 |
+| 프로세스 표 (좀비 프로세스 확인) | 0.3초마다 `/proc/<번호>/stat` 에서 읽은 웹 서버 프로세스의 자식, 손자 프로세스와 상태 글자. 끝난 프로세스가 표에서 사라지면 부모가 `waitpid`로 거둔 것이고, 거두지 않았다면 상태 Z로 남는다 |
+| 헬스 체크의 작은 점 | 백엔드 로그에 새로 찍힌 헬스 체크 연결, 프록시 로그의 `[Health]` 줄 |
 | 스레드 있음과 없음의 시간 | 프록시 8080(스레드)과 8081(스레드 없음)에 같은 요청 두 개를 보내 잰 값 |
 
 - 요청을 보내는 클라이언트는 브라우저가 아니라 CGI 프로세스 `lab`이다. 브라우저는 Forward Proxy용 요청 줄(`GET http://...`)이나 형식이 틀린 요청(상태 코드 400, 414, 431 등)을 직접 만들 수 없기 때문이다.
@@ -74,7 +77,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
 | 파일 | 내용 |
 |---|---|
 | `demo/lab/run.sh` | 빌드(`make lab`)하고 프로세스 일곱 개를 띄운다 |
-| `demo/lab/cgi/lab.c` | CGI 프로그램. `action=send`, `multi`, `fds`, `status`, `stop`, `start`, `log`, `conf` |
+| `demo/lab/cgi/lab.c` | CGI 프로그램. `action=send`, `multi`, `fds`, `procs`, `status`, `stop`, `start`, `log`, `conf` |
 | `demo/lab/www/index.html`, `lab.css`, `lab.js` | 페이지. 장면의 글과 버튼은 `lab.js`의 `GROUPS`에 있다 |
 
 ## 주의
@@ -82,3 +85,4 @@ sudo setcap cap_net_raw,cap_net_admin=eip "$(readlink -f "$(which tcpdump)")"
 - 발표용 로컬 데모다. CGI 프로그램 `lab`은 백엔드 프로세스를 끄고 켤 수 있으므로, 다른 사람이 접속할 수 있는 환경에 띄워 두지 않는다.
 - 끄기, 켜기 버튼은 `demo/lab/run/포트.pid`에 적힌 프로세스에 SIGTERM을 보낸다. `run.sh`로 띄웠을 때만 동작한다.
 - 화면 높이가 560px보다 낮거나 너비가 980px보다 좁으면 한 화면에 넣지 않고 아래로 이어진다.
+- 장면에 들어오면 꺼져 있는 프로세스를 모두 켜고, 프록시의 헬스 체크가 그 백엔드를 다시 순번에 넣을 때까지(2초 안) 기다린 뒤 요청 수를 0으로 되돌린다. 그동안 버튼은 눌리지 않는다.

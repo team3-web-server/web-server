@@ -134,11 +134,18 @@ button:focus-visible, input:focus-visible { outline: 3px solid #93b4f8; outline-
 .chip.bad { fill: var(--err); }
 .chip.forward { fill: var(--forward); }
 .chip.reverse { fill: var(--req); }
-.dot { fill: var(--req); stroke: #fff; stroke-width: 2; }
-.dot.res { fill: var(--res); }
-.dot.err { fill: var(--err); }
-.dot.body { stroke: #f59e0b; stroke-width: 5; }
-.dot.wait { fill: #f59e0b; }
+.dot circle, .dot .pill { fill: var(--req); stroke: #fff; stroke-width: 2; }
+.dot.res circle, .dot.res .pill { fill: var(--res); }
+.dot.err circle, .dot.err .pill { fill: var(--err); }
+.dot.wait circle, .dot.wait .pill { fill: #b45309; }
+.dot text { fill: #fff; font-size: 13px; font-weight: 700; text-anchor: middle; }
+.dot .pill, .dot text { display: none; }
+.dot.labeled .pill, .dot.labeled text { display: inline; }
+.dot.labeled circle { display: none; }
+/* 헬스 체크 스레드의 connect: 요청이 아니므로 속이 빈 작은 점으로 그린다 */
+.probe { fill: #fff; stroke: #64748b; stroke-width: 2; }
+.probe.ok { stroke: var(--res); }
+.probe.err { stroke: var(--err); fill: #fde8e8; }
 .hidden { display: none; }
 .mode-direct .only-proxy { display: none; }
 .mode-proxy .only-direct { display: none; }
@@ -248,3 +255,15 @@ button:focus-visible, input:focus-visible { outline: 3px solid #93b4f8; outline-
 .term .layer.http { border-color: #6fdc8c; }
 .term .layer b { display: block; font-size: 11.5px; letter-spacing: 0.03em; }
 .term .layer.ip b { color: #f6b756; } .term .layer.tcp b { color: #7fb0ff; } .term .layer.http b { color: #6fdc8c; }
+
+/* 프로세스 표 칸 */
+.term .zombie { font-weight: 700; }
+.term .zombie.none { color: #6fdc8c; }
+.term .zombie.some { color: #ff8a80; }
+.term .gone { color: var(--term-dim); }
+.term .live { color: #f6b756; }
+
+/* Health Check와 Failover 장면: /api/ 의 백엔드 둘만 남겨 크게 보여 준다 */
+.focus-api #node-8002, .focus-api #node-8004, .focus-api #edge-8002, .focus-api #edge-8004, .focus-api .r-other { display: none; }
+/* 프록시가 순번에서 뺀 백엔드로 가는 선 */
+.edges line.cut { stroke-dasharray: 3 7; }
