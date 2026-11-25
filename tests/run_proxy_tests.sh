@@ -42,6 +42,7 @@ pids=""
 for n in 1 2 3; do
   "$server" "1800$n" "$tmp/b$n" > "$tmp/b$n.log" 2>&1 &
   pids="$pids $!"
+  [ "$n" = 2 ] && pid2=$!
   [ "$n" = 3 ] && pid3=$!
 done
 "$proxy" "$pport" "$tmp/proxy.conf" > "$tmp/proxy.log" 2>&1 &
@@ -229,6 +230,35 @@ wait $st_pids
 expect "동시에 온 같은 요청 5개가 모두 올바른 응답을 받음" "$(cat "$tmp"/st.* | grep -c '^slow$')" "5"
 echo "기록: 동시 요청 5개 중 miss(백엔드에 간 요청) $(logcount '\[Cache\] MISS /cgi-bin/slow?stampede')개"
 expect "그 뒤의 같은 요청은 사본을 받음 (hit)" "$(cget '/cgi-bin/slow?stampede') $(logcount '\[Cache\] HIT /cgi-bin/slow?stampede')" "slow 200 1"
+
+echo "== 백엔드와의 연결을 다시 쓰기 (프록시와 백엔드 사이의 keep-alive) =="
+# mark: 프록시 로그의 지금 줄 수를 적어 둔다.  since <글자열>: mark 뒤에 찍힌 줄 중 그 글자열이 있는 줄의 수
+mark() { marked=$(wc -l < "$tmp/proxy.log"); }
+since() { tail -n +"$((marked + 1))" "$tmp/proxy.log" | grep -c "$1"; }
+get /static/who.txt > /dev/null   # 보관함에 18002와의 연결이 하나 있게 한다
+mark
+expect "GET 두 번의 응답" "$(get /static/who.txt) $(get /static/who.txt)" "backend 2 200 backend 2 200"
+expect "두 번 모두 보관한 연결을 다시 씀 (connect 없음)" "$(since '18002 보관한 연결을 다시 씀') $(since '18002 새로 connect')" "2 0"
+if grep -q '이 연결의 3번째 요청' "$tmp/b2.log"; then
+  pass "백엔드가 연결 하나에서 요청을 세 번 받음"
+else
+  bad "백엔드 로그에 '이 연결의 3번째 요청'이 없음"
+fi
+mark
+expect "POST의 응답" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -d 'a=1' "http://127.0.0.1:$pport/cgi-bin/echo")" "200"
+expect "POST는 보관한 연결을 쓰지 않고 새로 connect" "$(since '18002 보관한 연결을 다시 씀') $(since '18002 새로 connect')" "0 1"
+
+# 보관한 연결을 백엔드가 먼저 닫은 경우: 백엔드 18002의 자식 프로세스(연결을 맡은 프로세스)만 끝낸다. listen하는 프로세스는 그대로다
+pkill -KILL -P "$pid2"; sleep 0.3
+mark
+expect "보관한 연결이 닫혀 있어도 클라이언트는 200을 받음" "$(get /static/who.txt)" "backend 2 200"
+expect "닫힌 연결을 알아채고 새 연결로 다시 보냄" "$(since '18002 보관한 연결이 이미 닫혀 있음') $(since '18002 새로 connect')" "1 1"
+
+# 4초 넘게 쉰 연결은 다시 쓰지 않는다 (백엔드는 5초 쉰 연결을 닫는다)
+sleep 4.3
+mark
+expect "4초 넘게 쉰 뒤의 GET" "$(get /static/who.txt)" "backend 2 200"
+expect "오래 쉰 연결을 닫고 새로 connect" "$(since '18002 4초 넘게 쉰 연결') $(since '18002 새로 connect')" "1 1"
 
 echo "== 프록시 출력 =="
 if grep -q 'GET /api/who.txt → 127.0.0.1:18001' "$tmp/proxy.log" && grep -q 'GET /api/who.txt → 127.0.0.1:18003' "$tmp/proxy.log"; then
