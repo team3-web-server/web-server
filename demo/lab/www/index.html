@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Server Lab</title>
+<link rel="stylesheet" href="lab.css">
+</head>
+<body>
+<header class="top">
+  <h1>Web Server Lab</h1>
+  <nav class="cats" id="cats" aria-label="주제"></nav>
+  <div id="link-state" class="link-state" aria-live="polite">연결 확인 중</div>
+</header>
+<nav class="subtabs" id="tabs" aria-label="장면"></nav>
+
+  <main id="main">
+    <section class="card scene" aria-live="polite">
+      <div class="scene-head">
+        <h2 id="scene-title"></h2>
+        <span id="scene-badge" class="badge" hidden></span>
+      </div>
+      <div class="controls" id="controls"></div>
+      <p class="why" id="why" hidden></p>
+    </section>
+
+    <section class="mid" id="mid">
+      <div class="card diagram" aria-label="요청이 지나가는 길">
+        <svg id="stage" class="mode-proxy" viewBox="0 20 900 345" preserveAspectRatio="xMidYMid meet" role="img" aria-label="클라이언트, 프록시, 웹 서버 사이의 흐름">
+          <g class="edges">
+            <line id="edge-client" class="only-proxy" x1="190" y1="190" x2="350" y2="190"/>
+            <line id="edge-8001" class="only-proxy" x1="520" y1="190" x2="690" y2="70"/>
+            <line id="edge-8003" class="only-proxy" x1="520" y1="190" x2="690" y2="150"/>
+            <line id="edge-8002" class="only-proxy" x1="520" y1="190" x2="690" y2="235"/>
+            <line id="edge-8004" class="only-proxy" x1="520" y1="190" x2="690" y2="315"/>
+            <line id="edge-ext" class="only-proxy hidden" x1="520" y1="190" x2="690" y2="405"/>
+            <line id="edge-direct" class="only-direct" x1="190" y1="190" x2="600" y2="190"/>
+          </g>
+          <text class="route only-proxy" x="600" y="92">/api/</text>
+          <text class="route only-proxy r-other" x="640" y="212">/static/</text>
+          <text class="route only-proxy r-other" x="622" y="302">/cgi-bin/</text>
+
+          <g class="node" id="node-client">
+            <rect x="30" y="150" width="160" height="80" rx="12"/>
+            <text class="name" x="110" y="184">클라이언트</text>
+            <text class="sub" x="110" y="208">CGI 프로세스 lab</text>
+          </g>
+          <text id="client-chip" class="chip" x="110" y="262"></text>
+
+          <g class="node only-proxy" id="node-proxy">
+            <rect x="350" y="140" width="170" height="100" rx="12"/>
+            <circle class="lamp" cx="368" cy="158" r="6"/>
+            <text class="name" x="435" y="184">프록시</text>
+            <text class="sub" x="435" y="208">포트 8080</text>
+          </g>
+          <text id="proxy-note" class="chip only-proxy" x="435" y="272"></text>
+
+          <g class="node backend only-proxy" id="node-8001">
+            <rect x="690" y="40" width="180" height="60" rx="12"/>
+            <circle class="lamp" cx="708" cy="58" r="6"/>
+            <text class="name" x="780" y="66">백엔드 8001</text>
+            <text class="sub" id="cnt-8001" x="780" y="88">요청 0</text>
+          </g>
+          <g class="node backend only-proxy" id="node-8003">
+            <rect x="690" y="120" width="180" height="60" rx="12"/>
+            <circle class="lamp" cx="708" cy="138" r="6"/>
+            <text class="name" x="780" y="146">백엔드 8003</text>
+            <text class="sub" id="cnt-8003" x="780" y="168">요청 0</text>
+          </g>
+          <g class="node backend only-proxy" id="node-8002">
+            <rect x="690" y="205" width="180" height="60" rx="12"/>
+            <circle class="lamp" cx="708" cy="223" r="6"/>
+            <text class="name" x="780" y="231">백엔드 8002</text>
+            <text class="sub" id="cnt-8002" x="780" y="253">요청 0</text>
+          </g>
+          <g class="node backend only-proxy" id="node-8004">
+            <rect x="690" y="285" width="180" height="60" rx="12"/>
+            <circle class="lamp" cx="708" cy="303" r="6"/>
+            <text class="name" x="780" y="311">백엔드 8004</text>
+            <text class="sub" id="cnt-8004" x="780" y="333">요청 0</text>
+          </g>
+          <g class="node ext only-proxy hidden" id="node-ext">
+            <rect x="690" y="375" width="180" height="60" rx="12"/>
+            <text class="name" x="780" y="401">다른 서버</text>
+            <text class="sub" id="ext-name" x="780" y="423"></text>
+          </g>
+
+          <g class="node only-direct" id="node-direct">
+            <rect x="600" y="140" width="210" height="100" rx="12"/>
+            <circle class="lamp" cx="618" cy="158" r="6"/>
+            <text class="name" id="direct-name" x="705" y="184">웹 서버</text>
+            <text class="sub" id="direct-sub" x="705" y="208">포트 8004 · 폴더 www</text>
+          </g>
+          <text id="direct-note" class="chip only-direct" x="705" y="272"></text>
+
+          <!-- TCP Handshake와 레이어 장면: 캡처한 패킷을 위에서 아래로 한 줄씩 그린다 (lab.js가 채운다) -->
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+            </marker>
+          </defs>
+          <g id="seq" class="only-seq"></g>
+
+          <!-- 헬스 체크 연결을 나타내는 작은 점들 (lab.js가 넣고 뺀다) -->
+          <g id="probes" class="only-proxy"></g>
+          <!-- 요청 하나를 나타내는 점. 이름표가 있으면 동그라미 대신 이름이 적힌 알약 모양으로 그린다 -->
+          <g id="dot" class="dot hidden" transform="translate(190,190)"><rect class="pill" x="-30" y="-11" width="60" height="22" rx="11"/><circle r="9"/><text y="4.5"></text></g>
+          <g id="dot2" class="dot hidden" transform="translate(190,190)"><rect class="pill" x="-30" y="-11" width="60" height="22" rx="11"/><circle r="9"/><text y="4.5"></text></g>
+        </svg>
+      </div>
+
+      <div class="term client" id="term-client">
+        <h3><span class="who" id="client-who">클라이언트</span><span id="res-meta" class="meta"></span></h3>
+        <div class="screen" id="layer-screen" hidden></div>
+        <div class="screen" id="client-screen">
+          <div class="label">보낸 요청</div>
+          <pre id="sent" class="empty">아직 보낸 요청이 없다</pre>
+          <div class="label">받은 응답</div>
+          <pre id="received" class="empty">아직 받은 응답이 없다</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="terms" id="terms" aria-label="프로세스별 터미널 출력"></section>
+  </main>
+
+<script src="lab.js"></script>
+</body>
+</html>

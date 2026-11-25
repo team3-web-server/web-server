@@ -58,14 +58,14 @@ make && ./build/server 8080 www
 
 ```bash
 # 터미널 2: URL 두 개를 주면 curl이 두 번째 요청에 연결을 다시 쓴다
-curl -v http://localhost:8080/index.html http://localhost:8080/style.css -o /dev/null -o /dev/null 2>&1 | grep -E "Re-using|Connection:"
+curl -v http://localhost:8080/index.html http://localhost:8080/style.css -o /dev/null -o /dev/null 2>&1 | grep -E "Re-?using|Connection:"
 ```
 
-`Re-using existing connection`이 나오고, 터미널 1에 `이 연결의 2번째 요청`이 찍힌다.
+`Re-using existing connection`(curl 버전에 따라 `Reusing existing connection`)이 나오고, 터미널 1에 `이 연결의 2번째 요청`이 찍힌다.
 
 ```bash
 # 터미널 2: HTTP/1.0(-0)은 닫기가 기본이다. Re-using이 나오지 않고 Connection: close가 나온다
-curl -0 -v http://localhost:8080/index.html http://localhost:8080/style.css -o /dev/null -o /dev/null 2>&1 | grep -E "Re-using|Connection:"
+curl -0 -v http://localhost:8080/index.html http://localhost:8080/style.css -o /dev/null -o /dev/null 2>&1 | grep -E "Re-?using|Connection:"
 ```
 
 ```bash

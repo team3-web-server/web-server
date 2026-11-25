@@ -1,0 +1,1969 @@
+/*
+ * Web Server Lab: 버튼 → CGI 프로그램(/cgi-bin/lab) → 웹 서버 또는 프록시.
+ * 이 파일은 요청을 직접 보내지 않는다. 요청을 보내는 것은 CGI 프로세스이고,
+ * 여기서는 CGI가 돌려준 결과(응답, 걸린 시간, /proc 에서 읽은 fd 표)와 각 프로세스의 로그 파일을 읽어 화면에 그린다.
+ */
+(function () {
+  'use strict';
+
+  var CGI = '/cgi-bin/lab';
+  var SVG = 'http://www.w3.org/2000/svg';
+  var POS = {
+    client: [110, 190],
+    proxy: [435, 190],
+    direct: [705, 190],
+    8001: [780, 70],
+    8003: [780, 150],
+    8002: [780, 235],
+    8004: [780, 315],
+    ext: [780, 405]
+  };
+  var PROXY_BACKENDS = [8001, 8003, 8002, 8004];
+  /* 그림의 선이 백엔드 칸에 닿는 점. 점은 프록시 가운데 → 프록시 칸의 오른쪽 변 → 이 점으로, 그려진 선 위를 움직인다 */
+  var EDGE_END = { 8001: [690, 70], 8003: [690, 150], 8002: [690, 235], 8004: [690, 315], ext: [690, 405] };
+  var CLIENT_OUT = [190, 190];
+  var PROXY_OUT = [520, 190];
+  var PROCESS = {
+    proxy: { title: '프록시 8080', cmd: './build/proxy 8080 demo/lab/proxy.conf' },
+    tcpdump: { title: '패킷 캡처 (커널이 주고받은 패킷)', cmd: 'tcpdump -i lo -l -n -tt -S tcp port 8004' },
+    8001: { title: '백엔드 8001', cmd: './build/server 8001 demo/proxy/backend1' },
+    8003: { title: '백엔드 8003', cmd: './build/server 8003 demo/proxy/backend3' },
+    8002: { title: '백엔드 8002', cmd: './build/server 8002 demo/proxy/backend2' },
+    8004: { title: '웹 서버 8004', cmd: './build/server 8004 www' },
+    8005: { title: '웹 서버 8005 (fork 없음)', cmd: './build/server-nofork 8005 www' },
+    8081: { title: '프록시 8081 (스레드 없음)', cmd: './build/proxy-nothread 8081 demo/lab/proxy.conf' }
+  };
+
+  var counts = { 8001: 0, 8003: 0, 8002: 0, 8004: 0 };
+  var up = { 8001: true, 8003: true, 8002: true, 8004: true, 8005: true, 8080: true, 8081: true, tcpdump: true };
+  var excluded = {};  /* 포트 → 프록시가 헬스 체크로 제외해 둔 백엔드인가 (프록시 로그의 [Health] 줄에서 읽는다) */
+  var logs = {};      /* 이름 → { offset, tail, box } : 지금 화면에 있는 로그 칸 */
+  var busy = false;
+  var preparing = false; /* 장면에 들어와 꺼진 프로세스를 켜는 중인가 (그동안 버튼을 막는다) */
+  var prepToken = 0;
+  var starting = {};     /* 포트 → 켜는 요청(Promise). 같은 포트를 동시에 두 번 켜지 않게 한다 */
+  var health = { offset: -60000, tail: '', first: true }; /* 프록시 로그에서 [Health], [Failover] 줄만 따로 읽는 위치 */
+  var procView = null;   /* 프로세스 표 칸: { box, note, target, seen, gone } */
+  var procBusy = false;
+  var poolView = null;   /* 프록시의 백엔드 목록과 연결 보관함 칸: { box, cmd, seen } */
+  var poolBusy = false;
+  var tally = { ok: null, proxies: 0, servers: 0, downs: [] }; /* 위쪽 칩에 적는 종류별 실행 중인 프로세스 수 */
+  var clients = 0;       /* 지금 요청을 보내고 있는 CGI 프로세스 lab의 수 (클라이언트) */
+  var lastActive = 0;    /* CGI 프로세스가 마지막 요청의 응답을 다 받은 시각. 보관한 연결이 쉬기 시작한 때로 본다 */
+  var current = null;
+  var directPort = 8004;
+
+  function $(id) { return document.getElementById(id); }
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) { node.className = cls; }
+    if (text !== undefined) { node.textContent = text; }
+    return node;
+  }
+
+  function call(params) {
+    var query = Object.keys(params).map(function (k) {
+      return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    }).join('&');
+    /* 요청을 보내는 동작(send, multi, burst, fds)의 CGI 프로세스 lab이 이 데모의 클라이언트다. 실행 중인 동안만 센다 */
+    var isClient = /^(send|multi|burst|fds)$/.test(params.action);
+    if (isClient) { clients += 1; paintClients(); }
+    function done() { if (isClient) { clients -= 1; paintClients(); } }
+    return fetch(CGI + '?' + query, { cache: 'no-store' }).then(function (r) {
+      done();
+      if (!r.ok) { throw new Error('CGI 응답 ' + r.status); }
+      /* 요청을 실제로 보낸 동작이 끝난 시각. 화면의 점은 그 뒤에 움직이므로, 점이 멈춘 때가 아니라 이때부터 연결이 쉰다 */
+      if (params.action === 'send' || params.action === 'multi' || params.action === 'burst') { lastActive = Date.now(); }
+      return r.json();
+    }, function (e) { done(); throw e; });
+  }
+
+  function sleep(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+
+  /* 요청 글자를 만든다. 줄 끝은 CRLF. HTTP/1.1이면 Host 헤더를 넣는다 */
+  function http(method, target, opt) {
+    opt = opt || {};
+    var version = opt.version || 'HTTP/1.0';
+    var lines = [method + ' ' + target + ' ' + version];
+    if (version === 'HTTP/1.1' && !opt.noHost) { lines.push('Host: localhost'); }
+    (opt.headers || []).forEach(function (h) { lines.push(h); });
+    if (opt.body !== undefined) { lines.push('Content-Length: ' + new TextEncoder().encode(opt.body).length); }
+    return lines.join('\r\n') + '\r\n\r\n' + (opt.body || '');
+  }
+
+  /* ---------- 장면 ---------- */
+
+  function get(port, target) { return function () { return send(port, http('GET', target)); }; }
+
+  var STATUS_CASES = [
+    { code: 200, to: 8004, raw: http('GET', '/index.html'), why: '200 OK: 파일 www/index.html이 있어서 그 내용을 본문으로 보냈다.' },
+    { code: 400, to: 8004, raw: http('GET', '/', { version: 'HTTP/1.1', noHost: true }), why: '400 Bad Request: HTTP/1.1 요청인데 Host 헤더가 없다. HTTP/1.1은 Host 헤더가 반드시 있어야 한다.' },
+    { code: 403, to: 8004, raw: http('GET', '/../Makefile'), why: '403 Forbidden: 경로에 ".."이 있어 정적 파일 폴더(www) 밖의 파일을 가리킨다. 웹 서버 프로세스가 파일을 열지 않고 거절했다.' },
+    { code: 404, to: 8004, raw: http('GET', '/nope.html'), why: '404 Not Found: www/nope.html 파일이 없다.' },
+    { code: 405, to: 8004, raw: http('POST', '/index.html', { headers: ['Content-Length: 0'] }), why: '405 Method Not Allowed: /index.html은 정적 파일이라 GET만 된다. 응답의 Allow 헤더가 되는 메서드를 알려 준다.' },
+    { code: 411, to: 8004, raw: http('POST', '/cgi-bin/echo'), why: '411 Length Required: POST인데 Content-Length 헤더가 없다. 웹 서버 프로세스는 본문을 몇 바이트 읽어야 할지 알 수 없다.' },
+    { code: 413, to: 8004, raw: http('POST', '/cgi-bin/echo', { headers: ['Content-Length: 2000000'] }), why: '413 Content Too Large: Content-Length가 2,000,000이다. 웹 서버가 받는 본문은 1MiB(1,048,576바이트)까지다. 본문을 읽기 전에 거절했다.' },
+    { code: 414, to: 8004, raw: http('GET', '/{{a5000}}'), why: '414 URI Too Long: 경로가 5,000바이트다(a를 5,000개). 경로를 담는 버퍼는 4,096바이트다.' },
+    { code: 431, to: 8004, raw: http('GET', '/', { headers: ['X-Long: {{a9000}}'] }), why: '431 Request Header Fields Too Large: 헤더 한 줄이 9,000바이트다. 요청 줄과 헤더를 받는 버퍼는 8,192바이트다.' },
+    { code: 500, to: 8004, raw: http('GET', '/cgi-bin/fail'), why: '500 Internal Server Error: CGI 프로그램 fail이 출력 없이 실패(종료 값 1)로 끝났다. 웹 서버 프로세스가 응답을 만들 수 없다.' },
+    { code: 501, to: 8004, raw: http('PUT', '/index.html'), why: '501 Not Implemented: PUT 메서드는 이 웹 서버가 구현하지 않았다. 구현한 메서드는 GET과 POST다.' },
+    { code: 502, to: 8080, raw: http('GET', 'http://127.0.0.1:9/'), why: '502 Bad Gateway: 이 요청은 프록시(8080)로 보낸 Forward 요청이다. 목적지 127.0.0.1:9에는 서버가 없어서 프록시 프로세스의 connect가 실패했다.' },
+    { code: 503, to: 8080, raw: http('GET', '/down/'), why: '503 Service Unavailable: 이 요청은 프록시(8080)로 보냈다. 규칙 /down/의 백엔드 127.0.0.1:9는 헬스 체크에서 연결되지 않아 제외돼 있다. 고를 백엔드가 없어서 프록시 프로세스는 connect를 시도하지 않았다.' },
+    { code: 505, to: 8004, raw: http('GET', '/', { version: 'HTTP/2.0' }), why: '505 HTTP Version Not Supported: 요청 줄의 버전이 HTTP/2.0이다. 이 웹 서버는 HTTP/1.0과 HTTP/1.1만 읽는다.' }
+  ];
+
+  var GROUPS = [
+    {
+      name: '소켓과 TCP',
+      scenes: [
+        {
+          key: 'fd', tab: 'Socket과 fd', stage: 'direct', port: 8004,
+          title: 'Socket과 fd: 듣기 소켓 하나, 연결마다 연결 소켓 하나',
+          controls: [
+            { label: '연결 하나 만들고 fd 표 읽기', cls: 'primary plain', run: function () { return runFds(false); } },
+            { toggle: 8004 },
+            { hint: '웹 서버를 껐다 켜면 로그에 socket, bind, listen 줄이 새로 찍힌다' }
+          ],
+          panes: [{ log: 8004 }, { fd: true }]
+        },
+        {
+          key: 'tcp', tab: 'TCP Handshake와 레이어', stage: 'seq',
+          title: 'TCP Handshake와 레이어: HTTP 요청 하나가 TCP, IP에 실려 가는 모습',
+          controls: [
+            { label: 'GET /index.html 보내고 패킷 읽기', cls: 'primary plain', run: function () { return runCapture(http('GET', '/index.html')); } },
+            { label: 'POST /cgi-bin/echo 보내고 패킷 읽기', cls: 'plain', run: function () { return runCapture(http('POST', '/cgi-bin/echo', { body: 'msg=hello' })); } },
+            { hint: '화살표를 누르면 그 패킷의 IP, TCP, HTTP 층을 오른쪽에 보여 준다 · seq, ack는 첫 패킷 기준 상대값' }
+          ],
+          panes: [{ log: 'tcpdump' }, { log: 8004 }]
+        }
+      ]
+    },
+    {
+      name: 'HTTP',
+      scenes: [
+        {
+          key: 'get', tab: 'HTTP GET', stage: 'direct', port: 8004,
+          title: 'HTTP GET: 정해진 글자 형식으로 파일을 달라고 한다',
+          controls: [
+            { label: 'GET /index.html', cls: 'primary', run: get(8004, '/index.html') },
+            { label: 'GET /style.css', cls: 'primary', run: get(8004, '/style.css') },
+            { label: 'GET /', cls: 'primary', run: get(8004, '/') },
+            { label: 'GET /nope.html', cls: '', run: get(8004, '/nope.html') },
+            { hint: '/ 는 index.html로 바뀐다 · /nope.html은 없는 파일' }
+          ],
+          panes: [{ log: 8004 }]
+        },
+        {
+          key: 'status', tab: '상태 코드', stage: 'direct', port: 8004,
+          title: '상태 코드: 요청이 어떻게 됐는지 숫자 세 자리로 알려 준다',
+          controls: STATUS_CASES.map(function (c) {
+            var cls = 'code ' + (c.code < 300 ? 'c2' : c.code < 500 ? 'c4' : 'c5');
+            return { label: String(c.code), cls: cls, run: function () { return send(c.to, c.raw, { why: c.why }); } };
+          }),
+          panes: [{ log: 8004 }, { log: 'proxy' }]
+        },
+        {
+          key: 'post', tab: 'POST', stage: 'direct', port: 8004,
+          title: 'POST: 요청에 본문을 실어 서버로 데이터를 보낸다',
+          controls: [
+            { input: 'post-body', value: 'msg=hello&from=lab', label: '보낼 본문' },
+            { label: 'POST /cgi-bin/echo', cls: 'primary', run: function () { return send(8004, http('POST', '/cgi-bin/echo', { body: $('post-body').value })); } },
+            { label: 'Content-Length 없이 POST', cls: '', run: function () { return send(8004, http('POST', '/cgi-bin/echo')); } }
+          ],
+          panes: [{ log: 8004 }]
+        },
+        {
+          key: 'http11', tab: 'HTTP/1.0과 HTTP/1.1', stage: 'direct', port: 8004,
+          title: 'HTTP/1.0과 HTTP/1.1: 요청마다 새 연결과 연결 재사용 (keep-alive)',
+          controls: [
+            { label: 'HTTP/1.0: 요청 세 개 (요청마다 새 연결)', cls: 'plain', run: function () { return runMulti(false); } },
+            { label: 'HTTP/1.1: 요청 세 개 (연결 하나를 유지)', cls: 'primary plain', run: function () { return runMulti(true); } },
+            { hint: '클라이언트 포트가 같으면 같은 연결이다' }
+          ],
+          panes: [{ log: 8004 }, { log: 'tcpdump' }]
+        }
+      ]
+    },
+    {
+      name: '동적 요청과 동시성',
+      scenes: [
+        {
+          key: 'cgi', tab: '정적과 동적 (CGI)', stage: 'direct', port: 8004,
+          title: '정적과 동적 (CGI): 파일을 읽어 보내기와 프로그램을 실행해 보내기',
+          controls: [
+            { label: '정적: GET /index.html', cls: 'primary', run: get(8004, '/index.html') },
+            { label: '동적: GET /cgi-bin/hello?name=somang', cls: 'primary', run: get(8004, '/cgi-bin/hello?name=somang') },
+            { label: 'CGI 실행 중의 프로세스와 fd 읽기 (3초)', cls: 'plain', run: function () { return runFds(true); } }
+          ],
+          panes: [{ log: 8004 }, { fd: true }, { procs: true, note: 'CGI 프로세스는 자식 프로세스가 fork, exec로 만든다. 자식 프로세스가 waitpid(pid, &wstatus, 0)로 CGI 프로세스가 끝나기를 기다렸다가 거둔다 (src/cgi.c의 run_cgi).' }]
+        },
+        {
+          key: 'fork', tab: 'fork 있음과 없음', stage: 'direct', port: 8004,
+          title: 'fork 있음과 없음: 느린 요청 하나가 다른 클라이언트를 기다리게 하는가',
+          controls: [
+            { label: 'fork 있음 (8004): 느린 요청 + 빠른 요청', cls: 'primary plain', run: function () { return runRace(8004); } },
+            { label: 'fork 없음 (8005): 느린 요청 + 빠른 요청', cls: 'plain', run: function () { return runRace(8005); } }
+          ],
+          panes: [{ log: 8004 }, { log: 8005 }, { procs: true, note: '자식 프로세스가 끝나면 커널이 웹 서버 프로세스(부모)에게 SIGCHLD를 보낸다. 부모의 핸들러가 waitpid(-1, NULL, WNOHANG)을 반복해 끝난 자식을 모두 거둔다 (src/main.c의 reap_children).' }]
+        },
+        {
+          key: 'thread', tab: '스레드 있음과 없음', stage: 'direct', port: 8080,
+          title: '스레드 있음과 없음: 프록시에서 느린 요청 하나가 다른 클라이언트를 기다리게 하는가',
+          controls: [
+            { label: '스레드 있음 (8080): 느린 요청 + 빠른 요청', cls: 'primary plain', run: function () { return runRace(8080); } },
+            { label: '스레드 없음 (8081): 느린 요청 + 빠른 요청', cls: 'plain', run: function () { return runRace(8081); } }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8081 }]
+        }
+      ]
+    },
+    {
+      name: 'Forward Proxy',
+      scenes: [
+        {
+          key: 'forward', tab: 'Forward Proxy', stage: 'proxy',
+          title: 'Forward Proxy: 어디로 보낼지 클라이언트가 정한다',
+          controls: [
+            { label: 'GET http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
+            { label: 'GET http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
+            { sep: true },
+            { input: 'forward-url', value: 'http://example.com/', label: '보낼 주소 (http://로 시작)' },
+            { label: '이 주소로 보내기', cls: 'forward plain', run: function () { return send(8080, http('GET', $('forward-url').value.trim())); } }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8002 }]
+        },
+        {
+          key: 'allow', tab: '허용 목록', stage: 'proxy',
+          title: '허용 목록: 허용한 서버로만 나가게 한다',
+          controls: [
+            { label: '허용: http://127.0.0.1:8002/static/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8002/static/') },
+            { label: '허용: http://127.0.0.1:8001/api/', cls: 'forward', run: get(8080, 'http://127.0.0.1:8001/api/') },
+            { label: '목록에 없음: http://127.0.0.1:8004/index.html', cls: '', run: get(8080, 'http://127.0.0.1:8004/index.html') },
+            { label: '목록에 없음: http://127.0.0.1:8003/api/', cls: '', run: get(8080, 'http://127.0.0.1:8003/api/') }
+          ],
+          panes: [{ conf: true, bottom: true }, { log: 'proxy' }, { log: 8002 }, { log: 8004 }]
+        }
+      ]
+    },
+    {
+      name: 'Reverse Proxy',
+      scenes: [
+        {
+          key: 'reverse', tab: 'Reverse Proxy', stage: 'proxy',
+          title: 'Reverse Proxy: 어디로 보낼지 프록시가 정한다',
+          controls: [
+            { label: 'GET /api/', cls: 'primary', run: get(8080, '/api/') },
+            { label: 'GET /static/', cls: 'primary', run: get(8080, '/static/') },
+            { label: 'GET /cgi-bin/hello?via=proxy', cls: 'primary', run: get(8080, '/cgi-bin/hello?via=proxy') },
+            { label: 'GET /img/a.png', cls: '', run: get(8080, '/img/a.png') },
+            { hint: '/img/ 는 규칙이 없는 경로' }
+          ],
+          panes: [{ conf: true }, { log: 'proxy' }, { log: 8001 }, { log: 8002 }]
+        },
+        {
+          key: 'rr', tab: 'Round-Robin', stage: 'proxy',
+          title: 'Round-Robin: 백엔드가 둘이면 번갈아 고른다',
+          controls: [
+            { label: 'GET /api/ 한 번', cls: 'primary', run: get(8080, '/api/') },
+            { label: 'GET /api/ 여섯 번', cls: 'primary', run: function () { return sendMany(6); } },
+            { label: '요청 수 지우기', cls: 'plain', run: function () { resetCounts(); return Promise.resolve(); } }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
+        },
+        {
+          key: 'hf', tab: 'Health Check와 Failover', stage: 'proxy', focus: true,
+          title: 'Health Check와 Failover: 꺼진 백엔드로는 요청을 보내지 않는다',
+          controls: [
+            { label: '① Failover: 8003을 끄고 바로 GET /api/ 세 번', cls: 'primary plain', run: function () { return runGap(); } },
+            { label: '② Health Check: GET /api/ 네 번', cls: 'primary plain', run: function () { return runAfterExclude(); } },
+            { label: '③ 자동 복귀: 꺼진 백엔드 켜기', cls: 'plain on', run: function () { return runRecover(); } },
+            { label: '④ 503: 둘 다 끄고 GET /api/', cls: 'plain off', run: function () { return runAllDown(); } },
+            { hint: '작은 점 = 헬스 체크 스레드의 connect (2초마다)' }
+          ],
+          panes: [{ log: 'proxy' }, { log: 8001 }, { log: 8003 }]
+        }
+      ]
+    },
+    {
+      name: '프록시 부가 기능',
+      scenes: [
+        {
+          key: 'pkeep', tab: 'keep-alive', stage: 'proxy',
+          title: 'keep-alive: 프록시는 클라이언트와의 연결도, 백엔드와의 연결도 닫지 않고 다시 쓴다',
+          controls: [
+            { label: 'HTTP/1.0: 요청 세 개 (요청마다 새 연결)', cls: 'plain', run: function () { return runMultiProxy(false); } },
+            { label: 'HTTP/1.1: 요청 세 개 (연결 하나를 유지)', cls: 'primary plain', run: function () { return runMultiProxy(true); } },
+            { label: '동시에 요청 12개 (보관함 채우기)', cls: 'primary plain', run: function () { return runBurst(12); } },
+            { hint: '백엔드와의 연결은 4초 안에 다시 누르면 보관한 것을 다시 쓴다' }
+          ],
+          panes: [{ pool: true }, { log: 'proxy' }, { log: 8001 }]
+        },
+        {
+          key: 'cache', tab: 'Response Caching', stage: 'proxy',
+          title: 'Response Caching: 같은 요청은 백엔드에 다시 묻지 않는다',
+          controls: [
+            { label: 'GET /cgi-bin/slow?page=1', cls: 'primary', run: function () { return runCache('/cgi-bin/slow?page=1'); } },
+            { label: 'GET /cgi-bin/slow?page=2', cls: 'primary', run: function () { return runCache('/cgi-bin/slow?page=2'); } },
+            { hint: '백엔드는 응답에 3초가 걸린다. 사본은 백엔드에 물어본 때부터 10초 동안 쓴다 (저장한 뒤로는 약 7초)' }
+          ],
+          panes: [{ conf: true }, { log: 'proxy' }, { log: 8004 }]
+        }
+      ]
+    }
+  ];
+
+  var SCENES = {};
+  GROUPS.forEach(function (g, gi) {
+    g.scenes.forEach(function (s) { s.group = gi; SCENES[s.key] = s; });
+  });
+
+  function buildCats() {
+    var nav = $('cats');
+    GROUPS.forEach(function (g, gi) {
+      var b = el('button');
+      b.type = 'button';
+      b.dataset.group = gi;
+      b.appendChild(el('span', 'n', String(gi + 1)));
+      b.appendChild(document.createTextNode(g.name));
+      b.addEventListener('click', function () { showScene(g.scenes[0].key); });
+      nav.appendChild(b);
+    });
+  }
+
+  function showScene(key) {
+    if (busy) { return; }
+    var scene = SCENES[key];
+    current = scene;
+    try { localStorage.setItem('lab-scene', key); } catch (e) { /* 저장하지 못해도 화면은 그대로 동작한다 */ }
+
+    Array.prototype.forEach.call($('cats').children, function (b) {
+      b.setAttribute('aria-expanded', Number(b.dataset.group) === scene.group ? 'true' : 'false');
+    });
+    var tabs = $('tabs');
+    tabs.textContent = '';
+    GROUPS[scene.group].scenes.forEach(function (s) {
+      var b = el('button', '', s.tab);
+      b.type = 'button';
+      if (s.key === key) { b.setAttribute('aria-current', 'true'); }
+      if (s.badge) { b.appendChild(el('span', 'tag', s.badge)); }
+      b.addEventListener('click', function () { showScene(s.key); });
+      tabs.appendChild(b);
+    });
+
+    $('scene-title').textContent = scene.title;
+    $('scene-badge').hidden = !scene.badge;
+    $('scene-badge').textContent = scene.badge === '준비 중' ? '준비 중' : '구현 전: 코드를 구현하면 채운다';
+    $('why').hidden = true;
+    $('main').className = scene.shell ? 'shell' : '';
+
+    buildControls(scene);
+    resetStage(scene);
+    buildPanes(scene);
+    paintStatus();
+    pullLogs().catch(function () {});
+    prepare();
+  }
+
+  /*
+   * 장면에 들어오면 처음 상태로 맞춘다: 꺼져 있는 프로세스를 모두 켜고, 프록시의 헬스 체크가 그 백엔드를
+   * 다시 순번에 넣을 때까지 기다리고, 요청 수를 0으로 되돌린다. 그동안 버튼은 눌리지 않는다.
+   */
+  function prepare() {
+    var token = ++prepToken;
+    preparing = true;
+    setDisabled(true);
+    return refreshStatus().then(function () {
+      var downs = Object.keys(PROCESS).filter(function (name) { return /^\d+$/.test(name) && up[name] === false; });
+      var held = PROXY_BACKENDS.filter(function (port) { return excluded[port]; });
+      if (!downs.length && !held.length) { return null; }
+      showWhy('장면 준비 중: ' + (downs.length ? downs.join(', ') + ' 프로세스를 켜고, ' : '') + '프록시의 헬스 체크가 백엔드를 다시 순번에 넣기를 기다린다 (2초 안).');
+      return ensureUp(downs.concat(held));
+    }).then(function () {
+      if (token !== prepToken) { return; }
+      resetCounts();
+      clearMarks();
+      showWhy('');
+    }).catch(function (e) {
+      if (token === prepToken) { showError(e.message); }
+    }).then(function () {
+      if (token !== prepToken) { return; }
+      preparing = false;
+      setDisabled(busy);
+      refreshStatus();
+    });
+  }
+
+  /* ports의 프로세스 중 꺼진 것을 켜고, 프록시가 제외해 둔 백엔드가 다시 순번에 들어올 때까지 기다린다 */
+  function ensureUp(ports) {
+    /* 같은 포트가 두 번 들어와도 한 번만 켠다. 같은 포트를 동시에 두 번 켜면 둘째 프로세스는 bind에 실패한다 */
+    ports = ports.map(String).filter(function (port, i, all) { return all.indexOf(port) === i; });
+    var need = ports.filter(function (port) { return !up[port]; });
+    /* 꺼져 있었지만 프록시 로그에서 "제외" 줄을 보지 못한 백엔드: 헬스 체크 한 바퀴(2초)를 기다려야 상태를 믿을 수 있다 */
+    var unknown = need.some(function (port) { return PROXY_BACKENDS.indexOf(Number(port)) >= 0 && !excluded[port]; });
+    return Promise.all(need.map(function (port) {
+      /* 장면을 빠르게 넘겨 준비가 겹쳐도, 켜는 중인 포트는 그 요청이 끝나기를 같이 기다린다 */
+      if (!starting[port]) {
+        starting[port] = call({ action: 'start', port: port }).then(function (r) {
+          delete starting[port];
+          if (!r.ok) { throw new Error(r.error); }
+          up[port] = r.up;
+        }, function (e) { delete starting[port]; throw e; });
+      }
+      return starting[port];
+    })).then(function () {
+      paintStatus();
+      var started = Date.now();
+      function loop() {
+        return watchHealth().then(function () {
+          var waited = Date.now() - started;
+          var pending = PROXY_BACKENDS.some(function (port) { return up[port] && excluded[port]; });
+          if ((!pending && (!unknown || waited >= 2300)) || waited > 5000) { return null; }
+          return sleep(250).then(loop);
+        });
+      }
+      return loop();
+    }).then(function () { return pullLogs(); });
+  }
+
+  function buildControls(scene) {
+    var box = $('controls');
+    box.textContent = '';
+    scene.controls.forEach(function (c) {
+      var node;
+      if (c.sep) {
+        node = el('span', 'sep');
+      } else if (c.hint) {
+        node = el('span', 'hint', c.hint);
+      } else if (c.input) {
+        node = el('input');
+        node.id = c.input;
+        node.type = 'text';
+        node.value = c.value;
+        node.setAttribute('aria-label', c.label);
+      } else if (c.toggle) {
+        node = el('button');
+        node.type = 'button';
+        node.dataset.toggle = c.toggle;
+        node.addEventListener('click', function () { guarded(function () { return toggleBackend(c.toggle); }); });
+      } else {
+        node = el('button', c.cls, c.label);
+        node.type = 'button';
+        node.addEventListener('click', function () { guarded(c.run); });
+      }
+      box.appendChild(node);
+    });
+  }
+
+  /* 요청 하나가 끝나기 전에 다른 버튼이 눌리지 않게 한다 */
+  function guarded(run) {
+    if (busy || preparing) { return; }
+    busy = true;
+    setDisabled(true);
+    Promise.resolve().then(run).catch(function (e) {
+      showError(e.message);
+    }).then(function () {
+      busy = false;
+      setDisabled(preparing);
+    });
+  }
+
+  function setDisabled(flag) {
+    Array.prototype.forEach.call($('controls').querySelectorAll('button'), function (b) { b.disabled = flag; });
+  }
+
+  /* ---------- 터미널 칸 ---------- */
+
+  function buildPanes(scene) {
+    var box = $('terms');
+    box.textContent = '';
+    logs = {};
+    procView = null;
+    poolView = null;
+    (scene.panes || []).forEach(function (p) {
+      var term = el('div', 'term');
+      var h = el('h3');
+      var screen = el('div', 'screen');
+      if (p.log) {
+        var info = PROCESS[p.log];
+        h.appendChild(el('span', 'who', info.title));
+        h.appendChild(el('span', 'cmd', '$ ' + info.cmd));
+        term.dataset.proc = p.log;
+        logs[p.log] = { offset: -2500, tail: '', box: screen, first: true };
+      } else if (p.fd) {
+        h.appendChild(el('span', 'who', 'fd 표'));
+        h.appendChild(el('span', 'cmd', '$ ls -l /proc/프로세스 번호/fd'));
+        screen.id = 'fd-screen';
+        screen.appendChild(el('div', 'empty', '버튼을 누르면 웹 서버 프로세스의 fd 표를 읽어 온다'));
+      } else if (p.procs) {
+        h.appendChild(el('span', 'who', '프로세스 표 (좀비 프로세스 확인)'));
+        var cmd = el('span', 'cmd', '$ ps --ppid 웹 서버 프로세스 번호 -o pid,stat,comm');
+        h.appendChild(cmd);
+        procView = { box: screen, cmd: cmd, note: p.note, target: null, seen: {}, gone: [] };
+        pullProcs();
+      } else if (p.pool) {
+        h.appendChild(el('span', 'who', '프록시의 백엔드 목록과 연결 보관함'));
+        var poolCmd = el('span', 'cmd', '$ ls -l /proc/프록시 프로세스 번호/fd');
+        h.appendChild(poolCmd);
+        poolView = { box: screen, cmd: poolCmd, seen: {} };
+        pullPool();
+      } else if (p.conf) {
+        h.appendChild(el('span', 'who', '설정 파일'));
+        h.appendChild(el('span', 'cmd', '$ cat demo/lab/proxy.conf'));
+        call({ action: 'conf' }).then(function (r) {
+          if (!r.ok) { return; }
+          r.text.replace(/\n+$/, '').split('\n').forEach(function (line) {
+            var cls = line.charAt(0) === '#' ? 'note' : line.indexOf('allow') === 0 ? 'forward' : line.charAt(0) === '/' ? 'reverse' : '';
+            screen.appendChild(el('div', cls, line || ' '));
+          });
+          screen.scrollTop = p.bottom ? screen.scrollHeight : 0;
+        }).catch(function () {});
+      }
+      term.appendChild(h);
+      term.appendChild(screen);
+      box.appendChild(term);
+    });
+  }
+
+  function logClass(line) {
+    if (line.indexOf('[Reverse]') === 0) { return /\((404|503)\)/.test(line) ? 'bad' : 'reverse'; }
+    if (line.indexOf('[Failover]') === 0) { return 'bad'; }
+    if (line.indexOf('[Pool]') === 0) { return line.indexOf('다시 씀') > 0 || line.indexOf('보관 (') > 0 ? 'good' : (line.indexOf('이미 닫혀') > 0 ? 'bad' : 'reverse'); }
+    if (line.indexOf('[Cache] HIT') === 0) { return 'good'; }
+    if (line.indexOf('[Cache]') === 0) { return 'reverse'; }
+    if (line.indexOf('[Health]') === 0) { return line.indexOf('연결 실패') > 0 ? 'bad' : 'good'; }
+    if (line.indexOf('헬스 체크 연결') === 0) { return 'probe'; }
+    if (line.indexOf('[Forward]') === 0) { return line.indexOf('(403)') > 0 ? 'bad' : 'forward'; }
+    if (line.indexOf('connect') === 0 || line.indexOf('getaddrinfo') === 0) { return 'bad'; }
+    var m = /^응답: (\d+)/.exec(line);
+    if (m) { return Number(m[1]) < 400 ? 'status-ok' : 'status-bad'; }
+    if (line.indexOf('요청 줄:') === 0) { return 'first'; }
+    if (/^(socket fd|bind 성공|listen 중|프록시 listen)/.test(line)) { return 'good'; }
+    return '';
+  }
+
+  /*
+   * 프록시의 헬스 체크 스레드는 2초마다 백엔드에 connect만 하고 바로 close한다.
+   * 백엔드는 그 연결마다 로그 다섯 줄(연결 수락, 자식에게 맡김, 받은 바이트 수: 0, 헤더 전에 닫힘, 연결을 닫음)을 출력한다.
+   * 다른 줄이 묻히지 않게, 그 다섯 줄을 "헬스 체크 연결 N번" 한 줄로 묶어 보여 준다.
+   */
+  function foldProbes(lines, state) {
+    /* 앞 번에 미뤄 둔 줄(연결의 앞부분만 읽힌 것)을 앞에 붙이고, 이번에도 끝에 걸린 앞부분은 다음으로 미룬다 */
+    lines = (state.held || []).concat(lines);
+    state.held = [];
+    while (lines.length && /^(연결 수락:|자식 프로세스 \d+에게 연결을 맡겼습니다|이 연결의 1번째 요청, 받은 바이트 수: 0$)/.test(lines[lines.length - 1])) {
+      state.held.unshift(lines.pop());
+    }
+    state.probePids = state.probePids || {};
+    var drop = {};
+    var probes = {};
+    lines.forEach(function (line, i) {
+      if (line !== '이 연결의 1번째 요청, 받은 바이트 수: 0' || lines[i + 1] !== '헤더가 끝나기 전에 연결이 닫혔습니다') { return; }
+      var given = /^자식 프로세스 (\d+)에게 연결을 맡겼습니다/.exec(lines[i - 1] || '');
+      drop[i] = drop[i + 1] = true;
+      probes[i + 1] = true;
+      if (given) {
+        drop[i - 1] = true;
+        if (/^연결 수락:/.test(lines[i - 2] || '')) { drop[i - 2] = true; }
+        state.probePids[given[1]] = true;
+      }
+    });
+    /* 헬스 체크 연결을 맡았던 자식 프로세스의 "연결을 닫았습니다" 줄도 뺀다 (다음 번에 읽힐 수도 있다) */
+    lines.forEach(function (line, i) {
+      var closed = /^연결을 닫았습니다 \(자식 프로세스 (\d+)\)$/.exec(line);
+      if (closed && state.probePids[closed[1]]) { drop[i] = true; delete state.probePids[closed[1]]; }
+    });
+    var out = [];
+    var run = 0;
+    lines.forEach(function (line, i) {
+      if (probes[i]) { run += 1; }
+      if (!drop[i]) {
+        if (run) { out.push('헬스 체크 연결 ' + run + '번: 프록시가 connect한 뒤 요청 없이 닫음'); run = 0; }
+        out.push(line);
+      }
+    });
+    if (run) { out.push('헬스 체크 연결 ' + run + '번: 프록시가 connect한 뒤 요청 없이 닫음'); }
+    return out;
+  }
+
+  /*
+   * 프록시 로그에서 "[Health] 127.0.0.1:8003 연결 실패 …" / "… 연결됨 …" / "[Failover] 127.0.0.1:8003 연결 실패 …" 줄을 읽어,
+   * 프록시가 지금 제외해 둔 백엔드를 기억한다. 화면에 프록시 로그 칸이 없는 장면에서도 알아야 하므로 로그 칸과 따로 읽는다.
+   */
+  function watchHealth() {
+    var state = health;
+    return call({ action: 'log', name: 'proxy', from: state.offset }).then(function (r) {
+      if (!r.ok) { return; }
+      /* 프록시 로그 파일이 새로 만들어졌으면(run.sh를 다시 실행) 처음부터 다시 읽는다 */
+      state.offset = r.next;
+      var lines = (state.tail + r.text).split('\n');
+      state.tail = lines.pop();
+      var first = state.first;
+      state.first = false;
+      var changed = false;
+      lines.forEach(function (line) {
+        var m = /^\[(Health|Failover)\] 127\.0\.0\.1:(\d+) (연결 실패|연결됨)/.exec(line);
+        if (!m) { return; }
+        excluded[m[2]] = m[3] === '연결 실패';
+        changed = true;
+        if (!first && current && current.key === 'hf' && m[1] === 'Health' && EDGE_END[m[2]]) {
+          probe(Number(m[2]), m[3] === '연결됨');
+          setChip('proxy-note', '[Health] ' + m[2] + (m[3] === '연결됨' ? ' 연결됨 → 자동 복귀' : ' 연결 실패 → 자동 제외'), m[3] === '연결됨' ? 'ok' : 'bad');
+        }
+      });
+      if (changed) { paintStatus(); }
+    }).catch(function () {});
+  }
+
+  /* 화면에 있는 로그 칸마다 로그 파일에서 새로 쌓인 줄을 읽어 붙인다. 이름 → 새 줄들 */
+  function pullLogs() {
+    var names = Object.keys(logs);
+    var fresh = {};
+    return Promise.all(names.map(function (name) {
+      var state = logs[name];
+      return call({ action: 'log', name: name, from: state.offset }).then(function (r) {
+        if (!r.ok || logs[name] !== state) { return; }
+        state.offset = r.next;
+        var text = state.tail + r.text;
+        var lines = text.split('\n');
+        state.tail = lines.pop();
+        /* 처음에는 파일 끝의 일부만 읽으므로, 잘린 첫 줄은 버린다 */
+        if (state.first) {
+          state.first = false;
+          if (lines.length > 1) { lines.shift(); }
+          lines = foldProbes(lines, state);
+          lines = lines.slice(-12);
+        } else {
+          lines = foldProbes(lines, state);
+          Array.prototype.forEach.call(state.box.querySelectorAll('.new'), function (n) { if (lines.length) { n.classList.remove('new'); } });
+          fresh[name] = lines;
+        }
+        lines.forEach(function (line) {
+          var div = el('div', logClass(line), line);
+          if (fresh[name]) { div.classList.add('new'); }
+          state.box.appendChild(div);
+        });
+        while (state.box.childNodes.length > 200) { state.box.removeChild(state.box.firstChild); }
+        state.box.scrollTop = state.box.scrollHeight;
+      }).catch(function () {});
+    }).concat([watchHealth()])).then(function () {
+      /* Health Check와 Failover 장면: 백엔드 로그에 헬스 체크 연결이 새로 찍혔으면, 프록시에서 그 백엔드로 가는 작은 점을 그린다 */
+      if (current && current.key === 'hf') {
+        [8001, 8003].forEach(function (port) {
+          if ((fresh[port] || []).some(function (l) { return l.indexOf('헬스 체크 연결') === 0; })) { probe(port, true); }
+        });
+      }
+      return fresh;
+    });
+  }
+
+  /* 프록시 로그 줄 "[Reverse] GET /api/ → 127.0.0.1:8001" 에서 프록시가 정한 목적지를 꺼낸다 */
+  function readDecision(lines) {
+    for (var i = (lines || []).length - 1; i >= 0; i--) {
+      var m = /^\[(Reverse|Forward)\] \S+ \S+ → (.+)$/.exec(lines[i]);
+      if (m) {
+        var dest = /^(\S+):(\d+)$/.exec(m[2]);
+        return { kind: m[1], host: dest ? dest[1] : null, port: dest ? Number(dest[2]) : null, text: m[2] };
+      }
+    }
+    return null;
+  }
+
+  /* ---------- 상태(켜짐/꺼짐)와 요청 수 ---------- */
+
+  function paintStatus() {
+    PROXY_BACKENDS.forEach(function (port) {
+      var node = $('node-' + port);
+      node.classList.toggle('up', up[port]);
+      node.classList.toggle('down', !up[port]);
+      node.classList.toggle('excluded', !!excluded[port]);
+      $('cnt-' + port).textContent = (!up[port] ? '꺼짐 · ' : '') + (excluded[port] ? '제외됨 · ' : '') + '요청 ' + counts[port];
+      $('edge-' + port).classList.toggle('cut', !!excluded[port]);
+    });
+    var direct = $('node-direct');
+    direct.classList.toggle('up', up[directPort]);
+    direct.classList.toggle('down', !up[directPort]);
+    Array.prototype.forEach.call($('controls').querySelectorAll('[data-toggle]'), function (btn) {
+      var port = btn.dataset.toggle;
+      var name = PROCESS[port].title;
+      btn.textContent = up[port] ? name + ' 끄기' : name + ' 켜기';
+      btn.className = 'plain ' + (up[port] ? 'off' : 'on');
+    });
+    Array.prototype.forEach.call($('terms').children, function (term) {
+      var proc = term.dataset.proc;
+      term.classList.toggle('down', proc !== undefined && proc !== 'proxy' && !up[proc]);
+    });
+  }
+
+  function refreshStatus() {
+    return call({ action: 'status' }).then(function (s) {
+      s.backends.forEach(function (b) { up[b.port] = b.up; });
+      up.tcpdump = s.capture;
+      up[8080] = s.proxy.up;
+      var proxy = $('node-proxy');
+      proxy.classList.toggle('up', s.proxy.up);
+      proxy.classList.toggle('down', !s.proxy.up);
+      /*
+       * 위쪽 칩: 실행 중인 프로세스를 종류별로 센다.
+       *   프록시  : 8080, 8081(스레드 없는 빌드)
+       *   웹 서버 : 8001~8005와, 이 페이지와 CGI 프로그램을 서빙하는 8000 (이 응답이 왔으므로 8000은 실행 중이다)
+       *   클라이언트: 버튼을 누를 때 생겨 요청을 보내고 끝나는 CGI 프로세스 lab. paintClients가 요청 중인 개수를 적는다
+       */
+      var proxyPorts = [8080, 8081];
+      tally.proxies = (s.proxy.up ? 1 : 0) + s.backends.filter(function (b) { return b.port === 8081 && b.up; }).length;
+      tally.proxyTotal = proxyPorts.length;
+      var servers = s.backends.filter(function (b) { return proxyPorts.indexOf(b.port) === -1; });
+      tally.servers = 1 + servers.filter(function (b) { return b.up; }).length;
+      tally.serverTotal = 1 + servers.length;
+      tally.downs = s.backends.filter(function (b) { return !b.up; }).map(function (b) { return b.port; });
+      if (!s.proxy.up) { tally.downs.unshift(8080); }
+      tally.ok = true;
+      paintClients();
+      paintStatus();
+    }).catch(function () {
+      tally.ok = false;
+      paintClients();
+    });
+  }
+
+  /* 위쪽 칩의 글자. 요청을 보내는 CGI 프로세스 lab의 수(clients)가 바뀔 때도 다시 적는다 */
+  function paintClients() {
+    var link = $('link-state');
+    if (!tally.ok) {
+      link.textContent = tally.ok === false ? 'CGI 프로그램에 연결할 수 없음' : '연결 확인 중';
+      link.className = 'link-state' + (tally.ok === false ? ' bad' : '');
+      return;
+    }
+    link.textContent = '프록시 ' + tally.proxies + ' · 웹 서버 ' + tally.servers + ' · 클라이언트 ' + clients +
+      (tally.downs.length ? ' (꺼짐: ' + tally.downs.join(', ') + ')' : '');
+    link.title = '프록시: 8080, 8081 · 웹 서버: 8000~8005 · 클라이언트: 버튼을 누를 때 생겨 요청을 보내고 끝나는 CGI 프로세스 lab';
+    link.className = 'link-state ' + (tally.downs.length ? 'bad' : 'ok');
+  }
+
+  function toggleBackend(port) {
+    return call({ action: up[port] ? 'stop' : 'start', port: port }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      up[port] = r.up;
+      paintStatus();
+      return pullLogs();
+    });
+  }
+
+  function resetCounts() {
+    PROXY_BACKENDS.forEach(function (p) { counts[p] = 0; });
+    paintStatus();
+  }
+
+  /* ---------- 보낸 요청과 받은 응답 칸 ---------- */
+
+  /* 같은 글자가 길게 이어지는 부분은 줄여서 보여 준다 */
+  function shorten(line) {
+    return line.replace(/(.)\1{60,}/g, function (run, ch) { return ch + ch + ch + '…(' + ch + ' 가 계속 이어짐)…'; });
+  }
+
+  function fillSent(box, r) {
+    var parts = r.sent.split('\r\n\r\n');
+    var head = parts.shift().split('\r\n');
+    var body = parts.join('\r\n\r\n');
+    head.forEach(function (line, i) {
+      var cls = '';
+      if (i === 0) { cls = 'first' + (/^\S+ http:\/\//.test(line) ? ' forward' : ''); }
+      else if (/^content-length:/i.test(line)) { cls = 'len'; }
+      box.appendChild(el('span', cls, shorten(line) + '\n'));
+    });
+    if (!r.sent_truncated || body) { box.appendChild(el('span', 'cut', '(빈 줄)\n')); }
+    if (body) { box.appendChild(el('span', 'payload', body)); box.appendChild(document.createTextNode('\n')); }
+    if (r.sent_truncated) { box.appendChild(el('span', 'cut', '… 요청 전체는 ' + r.sent_bytes + '바이트\n')); }
+  }
+
+  function fillReceived(box, r) {
+    r.headers.split('\r\n').forEach(function (line, i) {
+      var cls = '';
+      if (i === 0) { cls = r.status >= 200 && r.status < 400 ? 'status-ok' : 'status-bad'; }
+      else if (/^content-length:/i.test(line)) { cls = 'len'; }
+      box.appendChild(el('span', cls, line + '\n'));
+    });
+    box.appendChild(el('span', 'cut', '(빈 줄)\n'));
+    box.appendChild(el('span', '', r.body + (r.body_truncated ? '\n' : '')));
+    if (r.body_truncated) { box.appendChild(el('span', 'cut', '… 본문 뒤는 생략')); }
+  }
+
+  function showExchange(r) {
+    var sent = $('sent');
+    sent.className = '';
+    sent.textContent = '';
+    fillSent(sent, r);
+    var got = $('received');
+    got.className = '';
+    got.textContent = '';
+    fillReceived(got, r);
+    $('res-meta').textContent = '→ ' + r.to + ' · ' + r.bytes + '바이트 · ' + r.ms + 'ms';
+  }
+
+  function showError(message) {
+    /* TCP 장면에서는 보낸 요청, 받은 응답 칸이 숨겨져 있으므로 층을 보여 주는 칸에 적는다 */
+    var got = current && current.stage === 'seq' ? $('layer-screen') : $('received');
+    got.className = '';
+    got.textContent = '';
+    got.appendChild(el('span', 'status-bad', '요청을 보내지 못했다: ' + message));
+    $('res-meta').textContent = '';
+  }
+
+  function showWhy(text) {
+    var why = $('why');
+    why.hidden = !text;
+    why.textContent = text || '';
+  }
+
+  /* ---------- 그림 ---------- */
+
+  function setChip(id, text, cls) {
+    var node = $(id);
+    node.textContent = text;
+    node.setAttribute('class', 'chip ' + (id === 'proxy-note' ? 'only-proxy ' : id === 'direct-note' ? 'only-direct ' : '') + (cls || ''));
+  }
+
+  function setDirect(port) {
+    directPort = port;
+    $('direct-name').textContent = port === 8080 || port === 8081 ? '프록시' : '웹 서버';
+    $('direct-sub').textContent = port === 8005 ? '포트 8005 · fork 없는 빌드' : port === 8081 ? '포트 8081 · 스레드 없는 빌드'
+      : port === 8080 ? '포트 8080 · 연결마다 스레드' : '포트 ' + port + ' · 폴더 www';
+    paintStatus();
+  }
+
+  function setStage(mode, port) {
+    $('stage').setAttribute('class', 'mode-' + mode + (current && current.focus ? ' focus-api' : ''));
+    $('stage').setAttribute('aria-label', mode === 'proxy' ? '클라이언트, 프록시, 백엔드 사이의 흐름' : mode === 'seq' ? '클라이언트와 웹 서버의 커널이 주고받은 패킷' : '클라이언트와 웹 서버 사이의 흐름');
+    var seq = mode === 'seq';
+    $('layer-screen').hidden = !seq;
+    $('client-screen').hidden = seq;
+    $('client-who').textContent = seq ? '고른 패킷의 층' : '클라이언트';
+    if (seq) {
+      $('stage').setAttribute('viewBox', '0 0 900 345');
+    } else if (mode === 'direct') {
+      setDirect(port || 8004);
+      /* 칸이 둘뿐이므로 그 둘이 크게 보이도록 그림의 보이는 범위를 좁힌다 */
+      $('stage').setAttribute('viewBox', '0 105 840 185');
+    } else {
+      showExt(!$('node-ext').classList.contains('hidden'), $('ext-name').textContent);
+    }
+  }
+
+  function resetStage(scene) {
+    if (scene.shell) { return; }
+    showExt(false);
+    setStage(scene.stage, scene.port);
+    clearMarks();
+    setChip('client-chip', '', '');
+    setChip('proxy-note', '', '');
+    setChip('direct-note', '', '');
+    setLabel($('dot'), '');
+    setLabel($('dot2'), '');
+    $('dot').setAttribute('class', 'dot hidden');
+    $('dot2').setAttribute('class', 'dot hidden');
+    $('probes').textContent = '';
+    $('sent').className = 'empty';
+    $('sent').textContent = '아직 보낸 요청이 없다';
+    $('received').className = 'empty';
+    $('received').textContent = '아직 받은 응답이 없다';
+    $('res-meta').textContent = '';
+    if (scene.stage === 'seq') { drawSeq([], null); }
+  }
+
+  function showExt(flag, name) {
+    $('node-ext').classList.toggle('hidden', !flag);
+    $('edge-ext').classList.toggle('hidden', !flag);
+    $('stage').setAttribute('viewBox', flag ? '0 20 900 435' : current && current.focus ? '0 22 900 268' : '0 20 900 345');
+    if (flag) { $('ext-name').textContent = name; }
+  }
+
+  function clearMarks() {
+    Array.prototype.forEach.call(document.querySelectorAll('.node'), function (n) {
+      n.classList.remove('hit', 'fail', 'busy');
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.edges line'), function (l) {
+      l.classList.remove('active', 'res', 'err');
+    });
+  }
+
+  function markEdge(id, cls) {
+    var line = $(id);
+    line.classList.remove('res', 'err');
+    line.classList.add('active');
+    if (cls) { line.classList.add(cls); }
+  }
+
+  function dotClass(dot, cls) { dot.setAttribute('class', 'dot ' + (dot.labelText ? 'labeled ' : '') + (cls || '')); }
+
+  function place(dot, x, y) {
+    dot.pos = [x, y];
+    dot.setAttribute('transform', 'translate(' + x + ',' + y + ')');
+  }
+
+  /* 점에 이름표를 붙인다 (예: 자식 A). 빈 글자면 이름표를 떼고 동그라미로 돌아간다 */
+  function setLabel(dot, text) {
+    dot.labelText = text || '';
+    dot.querySelector('text').textContent = dot.labelText;
+    var width = 18;
+    Array.prototype.forEach.call(dot.labelText, function (ch) { width += ch.charCodeAt(0) > 255 ? 13 : 7.5; });
+    var pill = dot.querySelector('.pill');
+    pill.setAttribute('x', -width / 2);
+    pill.setAttribute('width', width);
+    dot.classList.toggle('labeled', !!dot.labelText);
+  }
+
+  /*
+   * 점을 꺾인 선 pts(점들의 목록) 위에서 ms 동안 옮긴다. t0, t1은 선 전체 길이에 대한 비율(0~1)이다.
+   * t0=0, t1=1이면 처음부터 끝까지, t0=1, t1=0이면 거꾸로 간다.
+   */
+  function movePath(dot, pts, ms, t0, t1) {
+    if (t0 === undefined) { t0 = 0; }
+    if (t1 === undefined) { t1 = 1; }
+    var lens = [];
+    var total = 0;
+    for (var i = 1; i < pts.length; i++) {
+      var len = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      lens.push(len);
+      total += len;
+    }
+    function at(t) {
+      var left = t * total;
+      for (var k = 0; k < lens.length; k++) {
+        if (left <= lens[k] || k === lens.length - 1) {
+          var f = lens[k] === 0 ? 0 : Math.min(left / lens[k], 1);
+          return [pts[k][0] + (pts[k + 1][0] - pts[k][0]) * f, pts[k][1] + (pts[k + 1][1] - pts[k][1]) * f];
+        }
+        left -= lens[k];
+      }
+      return pts[pts.length - 1];
+    }
+    return new Promise(function (resolve) {
+      var start = null;
+      function step(now) {
+        if (start === null) { start = now; }
+        var f = Math.min((now - start) / ms, 1);
+        var xy = at(t0 + (t1 - t0) * f);
+        place(dot, xy[0], xy[1]);
+        if (f < 1) { requestAnimationFrame(step); } else { resolve(); }
+      }
+      requestAnimationFrame(step);
+    });
+  }
+
+  function moveDot(dot, from, to, ms) { return movePath(dot, [from, to], ms); }
+
+  /* 프록시 가운데에서 백엔드까지, 그려진 선(프록시 칸의 오른쪽 변 → 백엔드 칸의 왼쪽 변)을 따라가는 길 */
+  function backendPath(target) { return [POS.proxy, PROXY_OUT, EDGE_END[target]]; }
+
+  /* 헬스 체크 스레드의 connect 하나를 작은 점으로 그린다. ok가 아니면 백엔드 앞에서 멈췄다가 사라진다 */
+  function probe(port, ok) {
+    if (!EDGE_END[port]) { return; }
+    var dot = svg('circle', { class: 'probe ' + (ok ? 'ok' : 'err'), r: 5 });
+    $('probes').appendChild(dot);
+    var path = backendPath(port);
+    var go = movePath(dot, path, 420, 0.25, ok ? 1 : 0.85);
+    go.then(function () { return ok ? movePath(dot, path, 420, 1, 0.25) : sleep(500); }).then(function () {
+      if (dot.parentNode) { dot.parentNode.removeChild(dot); }
+    });
+  }
+
+  function statusText(r) { return r.status_line.replace(/^HTTP\/\d\.\d /, ''); }
+
+  /*
+   * 클라이언트 ↔ 웹 서버(프록시 없음). 점은 요청을 보낼 때 떠나고, 실제 응답이 돌아온 뒤에 돌아온다.
+   * pending: 응답을 기다리는 Promise. dy: 점의 세로 위치(두 요청을 함께 보일 때 겹치지 않게).
+   */
+  function travelDirect(dot, pending, dy, onArrive) {
+    /* 이름표가 있는 점은 폭이 넓으므로 칸에 겹치지 않게 조금 안쪽에서 멈춘다 */
+    var inset = dot.labelText ? 46 : 0;
+    var from = [POS.client[0] + 80 + inset, POS.client[1] + dy];
+    var to = [POS.direct[0] - 105 - inset, POS.direct[1] + dy];
+    place(dot, from[0], from[1]);
+    dotClass(dot, '');
+    markEdge('edge-direct');
+    var out = moveDot(dot, from, to, 420).then(function () {
+      $('node-direct').classList.add('busy');
+      dotClass(dot, 'wait');
+      if (onArrive) { onArrive(); }
+    });
+    return Promise.all([out, pending]).then(function (both) {
+      var r = both[1];
+      var ok = r.ok && r.status >= 200 && r.status < 400;
+      dotClass(dot, ok ? 'res' : 'err');
+      markEdge('edge-direct', ok ? 'res' : 'err');
+      return moveDot(dot, to, from, 420).then(function () {
+        dotClass(dot, 'hidden');
+        return r;
+      });
+    });
+  }
+
+  function sendDirect(port, raw, opt) {
+    setStage('direct', port);
+    clearMarks();
+    setChip('client-chip', '', '');
+    setChip('direct-note', '', '');
+    setLabel($('dot'), '');
+    return travelDirect($('dot'), call({ action: 'send', to: port, raw: raw }), 0).then(function (r) {
+      $('node-direct').classList.remove('busy');
+      if (!r.ok) {
+        $('node-direct').classList.add('fail');
+        setChip('client-chip', 'connect 실패', 'bad');
+        throw new Error(r.error);
+      }
+      var ok = r.status >= 200 && r.status < 400;
+      $('node-direct').classList.add(ok ? 'hit' : 'fail');
+      setChip('client-chip', statusText(r), ok ? 'ok' : 'bad');
+      showExchange(r);
+      showWhy(opt.why);
+      return pullLogs();
+    });
+  }
+
+  function sendProxy(raw, opt) {
+    setStage('proxy');
+    var result;
+    return call({ action: 'send', to: 8080, raw: raw }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      result = r;
+      return pullLogs();
+    }).then(function (fresh) {
+      showExchange(result);
+      showWhy(opt.why);
+      return animateProxy(result, readDecision(fresh.proxy), opt.fast);
+    });
+  }
+
+  function send(port, raw, opt) {
+    opt = opt || {};
+    var done = port === 8080 ? sendProxy(raw, opt) : sendDirect(port, raw, opt);
+    return done.then(refreshStatus);
+  }
+
+  function sendMany(n) {
+    var chain = Promise.resolve();
+    for (var i = 0; i < n; i++) {
+      chain = chain.then(function () { return send(8080, http('GET', '/api/'), { fast: true }); });
+    }
+    return chain;
+  }
+
+  /* 프록시를 거친 요청: 프록시 로그에 찍힌 목적지대로 점을 옮긴다 */
+  function animateProxy(r, decision, fast) {
+    var hop = fast ? 170 : 460;
+    var pause = fast ? 60 : 240;
+    var dot = $('dot');
+    var ok = r.status >= 200 && r.status < 400;
+
+    /* 프록시가 정한 목적지가 그림의 백엔드인지, 그림에 없는 다른 서버인지 */
+    var target = null;
+    if (decision && decision.port !== null) {
+      var local = decision.host === '127.0.0.1' || decision.host === 'localhost';
+      target = local && POS[decision.port] && decision.port !== 'direct' ? String(decision.port) : 'ext';
+    }
+    showExt(target === 'ext', decision ? decision.text : '');
+    clearMarks();
+    setChip('client-chip', '', '');
+    setChip('proxy-note', '', '');
+
+    setLabel(dot, '');
+    dotClass(dot, '');
+    place(dot, CLIENT_OUT[0], CLIENT_OUT[1]);
+
+    var edgeId = target ? 'edge-' + target : null;
+    var nodeId = target ? 'node-' + target : null;
+
+    markEdge('edge-client');
+    return moveDot(dot, CLIENT_OUT, POS.proxy, hop).then(function () {
+      $('node-proxy').classList.add('busy');
+      if (decision) {
+        var kind = decision.kind === 'Forward' ? 'forward' : 'reverse';
+        if (decision.cacheHit) {
+          setChip('proxy-note', '[Cache] HIT → 사본을 보냄', 'ok');
+        } else {
+          setChip('proxy-note', '[' + decision.kind + '] → ' + decision.text, decision.port === null ? 'bad' : kind);
+        }
+      } else {
+        setChip('proxy-note', '프록시 로그에 목적지 줄이 없음', 'bad');
+      }
+      return sleep(pause);
+    }).then(function () {
+      if (!target) { return null; }
+      markEdge(edgeId);
+      if (r.status === 502) {
+        /* 연결하지 못했다: 백엔드 앞에서 멈춘다 */
+        return movePath(dot, backendPath(target), hop, 0, 0.85).then(function () {
+          $(nodeId).classList.add('fail');
+          markEdge(edgeId, 'err');
+          dotClass(dot, 'err');
+          return sleep(pause);
+        }).then(function () {
+          return movePath(dot, backendPath(target), hop, 0.85, 0);
+        });
+      }
+      return movePath(dot, backendPath(target), hop).then(function () {
+        $(nodeId).classList.add('hit');
+        if (counts[target] !== undefined) {
+          counts[target] += 1;
+          paintStatus();
+        }
+        dotClass(dot, ok ? 'res' : 'err');
+        markEdge(edgeId, ok ? 'res' : 'err');
+        return sleep(pause);
+      }).then(function () {
+        return movePath(dot, backendPath(target), hop, 1, 0);
+      });
+    }).then(function () {
+      dotClass(dot, ok ? 'res' : 'err');
+      markEdge('edge-client', ok ? 'res' : 'err');
+      return moveDot(dot, POS.proxy, CLIENT_OUT, hop);
+    }).then(function () {
+      $('node-proxy').classList.remove('busy');
+      setChip('client-chip', statusText(r), ok ? 'ok' : 'bad');
+      dotClass(dot, 'hidden');
+    });
+  }
+
+  /* ---------- fd 표 (CGI 프로그램이 /proc 에서 읽어 온 값) ---------- */
+
+  var STEP_NAME = {
+    before: '① 연결 전',
+    connected: '② 클라이언트가 connect한 직후 (요청은 아직 보내지 않음)',
+    running: '② CGI 프로세스가 실행 중인 때',
+    after: '③ 응답을 다 보내고 연결을 닫은 뒤'
+  };
+  var ROLE_NAME = { parent: '웹 서버 프로세스 (부모)', child: '자식 프로세스', cgi: 'CGI 프로세스' };
+
+  function fdNote(role, f) {
+    if (f.sock.indexOf('LISTEN') === 0) { return '듣기 소켓'; }
+    if (f.sock.indexOf('ESTABLISHED') === 0) { return '연결 소켓'; }
+    if (f.target.indexOf('pipe:') === 0) {
+      if (role === 'cgi') { return f.fd === 0 ? '표준 입력: 요청 본문이 들어오는 파이프' : '표준 출력: 웹 서버가 읽는 파이프'; }
+      return 'CGI 프로세스의 출력을 읽는 파이프';
+    }
+    return '';
+  }
+
+  function renderFds(r) {
+    var box = $('fd-screen');
+    if (!box) { return; }
+    box.textContent = '';
+    r.steps.forEach(function (step, si) {
+      box.appendChild(el('div', 'step', STEP_NAME[step.name]));
+      step.procs.forEach(function (p) {
+        /* 첫 시점 뒤에는 0~2번 중 로그 파일, /dev/null을 가리키는 줄(부모와 같은 값)을 줄여 표가 한눈에 들어오게 한다 */
+        var rows = p.fds.filter(function (f) { return si === 0 || f.fd > 2 || /^(pipe|socket):/.test(f.target); });
+        var same = rows.length < p.fds.length ? '  (나머지 0~2번은 ①과 같다)' : '';
+        box.appendChild(el('div', 'proc', ROLE_NAME[p.role] + ' ' + p.pid + same));
+        rows.forEach(function (f) {
+          var row = el('div');
+          var target = f.target.replace(/^.*\/demo\/lab\/run\//, 'demo/lab/run/');
+          row.appendChild(document.createTextNode('  ' + f.fd + ' → ' + target + ' '));
+          if (f.sock) { row.appendChild(el('span', 'sockinfo', f.sock + ' ')); }
+          var note = fdNote(p.role, f);
+          if (note) { row.appendChild(el('span', f.sock ? 'note' : 'pipeinfo', '← ' + note)); }
+          box.appendChild(row);
+        });
+      });
+    });
+    box.appendChild(el('div', 'note', '클라이언트(CGI 프로세스 lab) 쪽 소켓: fd ' + r.client_fd + ', 포트 ' + r.client_port));
+  }
+
+  function runFds(cgi) {
+    var params = { action: 'fds', port: 8004 };
+    if (cgi) { params.mode = 'cgi'; }
+    setStage('direct', 8004);
+    clearMarks();
+    setChip('client-chip', '', '');
+    setChip('direct-note', '', '');
+    showWhy('');
+    setLabel($('dot'), '');
+    return travelDirect($('dot'), call(params), 0).then(function (r) {
+      $('node-direct').classList.remove('busy');
+      if (!r.ok) { throw new Error(r.error); }
+      $('node-direct').classList.add('hit');
+      setChip('client-chip', statusText(r), 'ok');
+      setChip('direct-note', '프로세스 ' + r.pid, '');
+      var sent = $('sent');
+      sent.className = '';
+      sent.textContent = '';
+      sent.appendChild(el('span', 'first', r.sent.replace(/\r\n\r\n$/, '') + '\n'));
+      var got = $('received');
+      got.className = '';
+      got.textContent = '';
+      got.appendChild(el('span', 'status-ok', r.status_line + '\n'));
+      got.appendChild(el('span', 'cut', '응답 전체 ' + r.bytes + '바이트'));
+      $('res-meta').textContent = '→ ' + r.port;
+      renderFds(r);
+      return pullLogs();
+    }).then(refreshStatus);
+  }
+
+  /* ---------- fork 있음과 없음: 느린 요청 뒤에 빠른 요청 ---------- */
+
+  function runRace(port) {
+    setStage('direct', port);
+    clearMarks();
+    setChip('client-chip', '', '');
+    setChip('direct-note', '', '');
+    showWhy('');
+    var slowRaw = http('GET', '/cgi-bin/slow');
+    var viaProxy = port === 8080 || port === 8081;
+    var fastPath = viaProxy ? '/api/' : '/index.html';
+    var fastRaw = http('GET', fastPath);
+    var sent = $('sent');
+    var got = $('received');
+    sent.className = '';
+    sent.textContent = '';
+    got.className = '';
+    got.textContent = '';
+    $('res-meta').textContent = '→ ' + port;
+    sent.appendChild(el('span', 'first', '느린 요청  GET /cgi-bin/slow HTTP/1.0\n'));
+
+    /*
+     * 점마다 "누가 이 요청을 처리하는가"를 이름표로 붙인다.
+     *   fork 있음(8004)  : 웹 서버 로그의 "자식 프로세스 N에게 연결을 맡겼습니다" 줄에서 읽은 순서대로 자식 A, 자식 B
+     *   fork 없음(8005)  : 부모가 직접 처리. 느린 요청이 끝나기 전에 온 빠른 요청은 커널의 대기열에 있다
+     *   스레드 있음(8080): 연결마다 새 스레드. 느린 요청의 스레드 번호는 /proc/<프록시>/task 에서 읽는다
+     *   스레드 없음(8081): main 스레드가 직접 처리
+     */
+    var slowDot = $('dot');
+    var fastDot = $('dot2');
+    var forked = port === 8004;
+    var threaded = port === 8080;
+    var self = viaProxy ? 'main' : '부모';
+    var slowDone = false;
+    var fastDone = false;
+    var racing = true;
+    setLabel(slowDot, '느린 요청');
+    setLabel(fastDot, '빠른 요청');
+    var slowNote = el('span', 'cut', '');
+    var fastNote = el('span', 'cut', '');
+    sent.appendChild(slowNote);
+    /* 요청을 보내기 전에 읽어 둘 것: fork 있음은 로그를 끝까지, 스레드 있음은 지금의 스레드 목록 */
+    var started = forked ? pullLogs() : threaded ? call({ action: 'procs', name: 'proxy' }) : Promise.resolve();
+    started = started.catch(function () { return {}; });
+
+    function slowArrived() {
+      if (threaded) { setLabel(slowDot, '스레드 A'); }
+      else if (!forked) { setLabel(slowDot, self); }
+    }
+    function fastArrived() {
+      if (threaded) { setLabel(fastDot, '스레드 B'); fastNote.textContent = '  → 스레드 B: 프록시 프로세스가 이 연결에 만든 새 스레드\n'; }
+      else if (!forked) { setLabel(fastDot, slowDone ? self : '대기열'); }
+    }
+
+    if (forked) {
+      /* 웹 서버 로그를 0.2초마다 읽어, 연결을 맡은 자식 프로세스의 번호를 온 순서대로 모은다 (헬스 체크 연결은 foldProbes가 뺀다) */
+      var pids = [];
+      var watchChildren = function () {
+        return pullLogs().then(function (fresh) {
+          (fresh[8004] || []).forEach(function (line) {
+            var m = /^자식 프로세스 (\d+)에게 연결을 맡겼습니다/.exec(line);
+            if (m) { pids.push(m[1]); }
+          });
+          if (pids[0] && !slowNote.textContent) {
+            setLabel(slowDot, '자식 A');
+            slowNote.textContent = '  → 자식 A: 자식 프로세스 ' + pids[0] + '\n';
+          }
+          if (pids[1] && !fastNote.textContent) {
+            setLabel(fastDot, '자식 B');
+            fastNote.textContent = '  → 자식 B: 자식 프로세스 ' + pids[1] + '\n';
+          }
+          return racing && !(pids[0] && pids[1]) ? sleep(200).then(watchChildren) : null;
+        });
+      };
+      started.then(watchChildren).catch(function () {});
+    } else if (threaded) {
+      /* 요청을 보내기 전의 스레드 목록(before)과 0.7초 뒤의 목록을 비교한다. 새로 생긴 스레드가 느린 요청을 맡은 스레드다 */
+      started.then(function (before) {
+        return sleep(700).then(function () { return call({ action: 'procs', name: 'proxy' }); }).then(function (now) {
+          var fresh = (now.threads || []).filter(function (t) { return (before.threads || []).indexOf(t) === -1; });
+          slowNote.textContent = '  → 스레드 A: ' + (fresh.length ? '스레드 번호 ' + fresh[0] + ' (프록시 프로세스 ' + now.pid + ' 안의 스레드 ' + now.threads.length + '개 중 하나)' : '프록시 프로세스가 이 연결에 만든 새 스레드') + '\n';
+        });
+      }).catch(function () {});
+    } else {
+      call({ action: 'procs', name: port }).then(function (r) {
+        if (!r.up) { return; }
+        slowNote.textContent = viaProxy
+          ? '  → main: 프록시 프로세스 ' + r.pid + '의 main 스레드가 직접 처리 (스레드 ' + r.threads.length + '개: main, 헬스 체크)\n'
+          : '  → 부모: 웹 서버 프로세스 ' + r.pid + '가 직접 처리 (연결을 맡길 자식 프로세스가 없다)\n';
+        fastNote.textContent = '  → 느린 요청이 끝날 때까지 커널의 대기열에서 기다린 뒤, 같은 ' + (viaProxy ? 'main 스레드' : '웹 서버 프로세스') + '가 처리\n';
+      }).catch(function () {});
+    }
+
+    function report(name, r) {
+      var ok = r.ok && r.status === 200;
+      got.appendChild(el('span', ok ? 'status-ok' : 'status-bad', name + '  ' + (r.ok ? r.status_line : r.error)));
+      got.appendChild(el('span', 'len', r.ok ? '  ' + Math.round(r.ms) + 'ms\n' : '\n'));
+      return r;
+    }
+
+    var slowCall = started.then(function () { return call({ action: 'send', to: port, raw: slowRaw }); }).then(function (r) {
+      slowDone = true;
+      /* fork, 스레드가 없는 빌드: 느린 요청이 끝나야 대기열에 있던 빠른 요청을 처리한다 */
+      if (!forked && !threaded && !fastDone && fastDot.labelText === '대기열') { setLabel(fastDot, self); }
+      return r;
+    });
+    var slow = travelDirect(slowDot, slowCall, -13, slowArrived).then(function (r) { return report('느린 요청', r); });
+    var fast = started.then(function () { return sleep(400); }).then(function () {
+      sent.appendChild(el('span', 'first', '빠른 요청  GET ' + fastPath + ' HTTP/1.0  (0.4초 뒤에 보냄)\n'));
+      sent.appendChild(fastNote);
+      return travelDirect(fastDot, call({ action: 'send', to: port, raw: fastRaw }).then(function (r) { fastDone = true; return r; }), 13, fastArrived);
+    }).then(function (r) {
+      report('빠른 요청', r);
+      if (r.ok) { setChip('direct-note', '빠른 요청이 걸린 시간 ' + Math.round(r.ms) + 'ms', r.ms < 1000 ? 'ok' : 'bad'); }
+      pullLogs().catch(function () {});
+      return r;
+    });
+    return Promise.all([slow, fast]).then(function (both) {
+      racing = false;
+      $('node-direct').classList.remove('busy');
+      var f = both[1];
+      if (f.ok) {
+        showWhy(viaProxy ? (f.ms < 1000
+          ? '빠른 요청은 ' + Math.round(f.ms) + 'ms 만에 응답을 받았다. 느린 요청은 새 스레드가 처리하고, 프록시 프로세스의 main 스레드는 바로 accept로 돌아가 빠른 요청을 다른 스레드에게 맡겼다.'
+          : '빠른 요청은 ' + Math.round(f.ms) + 'ms를 기다렸다. 프록시 프로세스의 main 스레드가 느린 요청을 직접 처리하느라 accept로 돌아가지 못했고, 빠른 요청의 연결은 그동안 커널의 대기열에 있었다.')
+          : f.ms < 1000
+          ? '빠른 요청은 ' + Math.round(f.ms) + 'ms 만에 응답을 받았다. 느린 요청은 자식 프로세스가 처리하고, 웹 서버 프로세스(부모)는 바로 accept로 돌아가 빠른 요청을 다른 자식 프로세스에게 맡겼다.'
+          : '빠른 요청은 ' + Math.round(f.ms) + 'ms를 기다렸다. 웹 서버 프로세스가 느린 요청을 직접 처리하느라 accept로 돌아가지 못했고, 빠른 요청의 연결은 그동안 커널의 대기열에 있었다.');
+      }
+      return pullLogs();
+    }).then(refreshStatus);
+  }
+
+  /* ---------- TCP Handshake와 레이어: tcpdump가 적은 실제 패킷을 그린다 ---------- */
+
+  function svg(tag, attrs, text) {
+    var node = document.createElementNS(SVG, tag);
+    Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    if (text !== undefined) { node.textContent = text; }
+    return node;
+  }
+
+  var FLAG_NAME = { 'S': 'SYN', 'S.': 'SYN+ACK', '.': 'ACK', 'P.': 'PSH+ACK', 'F.': 'FIN+ACK', 'FP.': 'FIN+PSH+ACK', 'R': 'RST', 'R.': 'RST+ACK' };
+
+  /* tcpdump 한 줄: "시각 IP 주소.포트 > 주소.포트: Flags [S], seq 1, ack 2, win ..., length 0" */
+  function parsePacket(line) {
+    var m = /^(\d+\.\d+) IP (\S+)\.(\d+) > (\S+)\.(\d+): Flags \[([^\]]+)\],(?: seq (\d+)(?::(\d+))?,)?(?: ack (\d+),)? win \d+.*length (\d+)/.exec(line);
+    if (!m) { return null; }
+    return {
+      time: Number(m[1]), src: m[2], sport: Number(m[3]), dst: m[4], dport: Number(m[5]), flags: m[6],
+      seq: m[7] === undefined ? null : Number(m[7]), ack: m[9] === undefined ? null : Number(m[9]), len: Number(m[10]), line: line
+    };
+  }
+
+  function packetKind(p) {
+    if (p.flags.indexOf('S') >= 0) { return 'hs'; }
+    if (p.flags.indexOf('F') >= 0 || p.flags.indexOf('R') >= 0) { return 'fin'; }
+    if (p.len > 0) { return 'data'; }
+    return 'ack';
+  }
+
+  var seqState = { packets: [], exchange: null, clientPort: 0 };
+
+  function drawSeq(packets, exchange) {
+    var g = $('seq');
+    g.textContent = '';
+    seqState.packets = packets;
+    seqState.exchange = exchange;
+    var left = 250;
+    var right = 650;
+    var clientPort = packets.length ? packets[0].sport : 0;
+    seqState.clientPort = clientPort;
+    g.appendChild(svg('text', { class: 'seq-head', x: left, y: 20 }, '클라이언트 쪽 커널'));
+    g.appendChild(svg('text', { class: 'seq-sub', x: left, y: 37 }, clientPort ? '127.0.0.1 포트 ' + clientPort + ' (CGI 프로세스 lab의 소켓)' : 'CGI 프로세스 lab의 소켓'));
+    g.appendChild(svg('text', { class: 'seq-head', x: right, y: 20 }, '웹 서버 쪽 커널'));
+    g.appendChild(svg('text', { class: 'seq-sub', x: right, y: 37 }, '127.0.0.1 포트 8004 (웹 서버 프로세스의 소켓)'));
+    g.appendChild(svg('line', { class: 'seq-life', x1: left, y1: 46, x2: left, y2: 340 }));
+    g.appendChild(svg('line', { class: 'seq-life', x1: right, y1: 46, x2: right, y2: 340 }));
+    var layer = $('layer-screen');
+    if (!packets.length) {
+      layer.textContent = '';
+      layer.appendChild(el('div', 'empty', '버튼을 누르면 요청을 보내고, 그동안 커널이 주고받은 패킷을 읽어 온다'));
+      return [];
+    }
+    var step = Math.min(30, 280 / packets.length);
+    var base = { c: null, s: null }; /* 양쪽의 첫 seq. 상대값을 만들 때 뺀다 */
+    packets.forEach(function (p) {
+      var side = p.sport === clientPort ? 'c' : 's';
+      if (base[side] === null && p.seq !== null) { base[side] = p.seq; }
+    });
+    var phases = { hs: '연결 맺기 (3-way handshake)', data: '데이터 (HTTP)', fin: '연결 끊기' };
+    var lastPhase = null;
+    var nodes = [];
+    packets.forEach(function (p, i) {
+      var fromClient = p.sport === clientPort;
+      var y = 62 + i * step;
+      var kind = packetKind(p);
+      var phase = kind === 'ack' ? lastPhase : kind;
+      if (phase !== lastPhase && phases[phase]) {
+        g.appendChild(svg('text', { class: 'seq-phase', x: 8, y: y + 4 }, phases[phase]));
+        lastPhase = phase;
+      }
+      var relSeq = p.seq === null ? null : p.seq - base[fromClient ? 'c' : 's'];
+      var relAck = p.ack === null ? null : p.ack - base[fromClient ? 's' : 'c'];
+      p.rel = { seq: relSeq, ack: relAck };
+      var label = FLAG_NAME[p.flags] || p.flags;
+      if (relSeq !== null) { label += '  seq=' + relSeq; }
+      if (relAck !== null) { label += '  ack=' + relAck; }
+      if (p.len > 0) { label += '  데이터 ' + p.len + '바이트'; }
+      var group = svg('g', { class: 'pkt ' + kind, tabindex: 0, role: 'button', 'aria-label': label });
+      group.appendChild(svg('rect', { class: 'hitbox', x: left, y: y - step / 2, width: right - left, height: step, rx: 4 }));
+      group.appendChild(svg('line', { x1: fromClient ? left : right, y1: y + 5, x2: fromClient ? right : left, y2: y + 5, 'marker-end': 'url(#arrow)' }));
+      group.appendChild(svg('text', { x: (left + right) / 2, y: y }, label));
+      group.style.visibility = 'hidden';
+      group.addEventListener('click', function () { selectPacket(i); });
+      group.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectPacket(i); } });
+      g.appendChild(group);
+      nodes.push(group);
+    });
+    return nodes;
+  }
+
+  /* 고른 패킷을 IP, TCP, HTTP 층으로 나눠 오른쪽 칸에 적는다 */
+  function selectPacket(index) {
+    var p = seqState.packets[index];
+    var ex = seqState.exchange;
+    Array.prototype.forEach.call($('seq').querySelectorAll('.pkt'), function (n, i) { n.classList.toggle('sel', i === index); });
+    var box = $('layer-screen');
+    box.textContent = '';
+    var fromClient = p.sport === seqState.clientPort;
+    function layer(cls, name, lines) {
+      var div = el('div', 'layer ' + cls);
+      div.appendChild(el('b', '', name));
+      lines.forEach(function (t) { div.appendChild(el('div', '', t)); });
+      box.appendChild(div);
+    }
+    layer('ip', 'IP 층: 어느 컴퓨터에서 어느 컴퓨터로', ['보낸 주소 ' + p.src + ' → 받는 주소 ' + p.dst]);
+    var tcp = ['보낸 포트 ' + p.sport + ' → 받는 포트 ' + p.dport, 'Flags [' + p.flags + '] = ' + (FLAG_NAME[p.flags] || p.flags)];
+    if (p.seq !== null) { tcp.push('seq ' + p.seq + ' (상대값 ' + p.rel.seq + ')'); }
+    if (p.ack !== null) { tcp.push('ack ' + p.ack + ' (상대값 ' + p.rel.ack + ')'); }
+    tcp.push('실은 데이터 ' + p.len + '바이트');
+    layer('tcp', 'TCP 층: 어느 소켓으로, 몇 번째 바이트인지', tcp);
+    if (p.len === 0) {
+      layer('http', 'HTTP 층', ['없음. 데이터가 0바이트인 패킷이다 (연결을 맺거나, 받았다고 알리거나, 연결을 끊는 패킷)']);
+    } else if (fromClient) {
+      layer('http', 'HTTP 층: 클라이언트 프로세스가 write한 요청 ' + p.len + '바이트', ex.sent.replace(/\r\n/g, '\n').split('\n'));
+    } else {
+      var text = (ex.headers + '\r\n\r\n' + ex.body).replace(/\r\n/g, '\n').split('\n').slice(0, 14);
+      layer('http', 'HTTP 층: 웹 서버 프로세스가 write한 응답 중 ' + p.len + '바이트 (응답 전체 ' + ex.bytes + '바이트)', text);
+    }
+    $('res-meta').textContent = '패킷 ' + (index + 1) + ' / ' + seqState.packets.length;
+  }
+
+  function runCapture(raw) {
+    if (!up.tcpdump) {
+      return Promise.reject(new Error('패킷 캡처(tcpdump)가 꺼져 있다. demo/lab/run.sh를 실행한 터미널의 안내를 확인한다'));
+    }
+    var result;
+    var lines = [];
+    drawSeq([], null);
+    /* 먼저 캡처 파일을 끝까지 읽어 두고, 요청을 보낸 뒤에 새로 쌓인 줄만 이 요청의 패킷으로 본다 */
+    return pullLogs().then(function () {
+      return call({ action: 'send', to: 8004, raw: raw });
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      result = r;
+      /* tcpdump가 줄을 파일에 쓰는 데 시간이 조금 걸린다. 연결을 끊는 패킷이 보일 때까지 최대 여섯 번 읽는다 */
+      function poll(tries) {
+        return sleep(250).then(pullLogs).then(function (fresh) {
+          lines = lines.concat(fresh.tcpdump || []);
+          var fins = lines.filter(function (l) { return /Flags \[F/.test(l); }).length;
+          return fins >= 2 || tries <= 1 ? null : poll(tries - 1);
+        });
+      }
+      return poll(6);
+    }).then(function () {
+      var all = lines.map(parsePacket).filter(Boolean);
+      var syn = all.filter(function (p) { return p.flags === 'S'; })[0];
+      if (!syn) { throw new Error('캡처 파일에서 이 요청의 SYN 패킷을 찾지 못했다'); }
+      /* 이 요청의 연결(클라이언트 포트가 같은 패킷)만 남긴다 */
+      var packets = all.filter(function (p) { return p.sport === syn.sport || p.dport === syn.sport; });
+      var nodes = drawSeq(packets, result);
+      var chain = Promise.resolve();
+      nodes.forEach(function (n) {
+        chain = chain.then(function () { n.style.visibility = 'visible'; return sleep(320); });
+      });
+      return chain.then(function () {
+        var firstData = 0;
+        packets.some(function (p, i) { if (p.len > 0) { firstData = i; return true; } return false; });
+        selectPacket(firstData);
+      });
+    }).then(refreshStatus);
+  }
+
+  /* ---------- HTTP/1.0과 HTTP/1.1: 요청 세 개를 연결 세 개 또는 연결 하나로 ---------- */
+
+  function runMulti(keep) {
+    setStage('direct', 8004);
+    clearMarks();
+    setChip('client-chip', '', '');
+    setChip('direct-note', '', '');
+    showWhy('');
+    var result;
+    var lines = [];
+    var sent = $('sent');
+    var got = $('received');
+    var dot = $('dot');
+    setLabel(dot, '');
+    var from = [POS.client[0] + 80, POS.client[1]];
+    var to = [POS.direct[0] - 105, POS.direct[1]];
+    return pullLogs().then(function () {
+      return call({ action: 'multi', port: 8004, keep: keep ? 1 : 0 });
+    }).then(function (r) {
+      if (!r.ok || r.error) { throw new Error(r.error || '요청을 보내지 못했다'); }
+      result = r;
+      sent.className = '';
+      sent.textContent = '';
+      got.className = '';
+      got.textContent = '';
+      $('res-meta').textContent = '→ 8004 · 연결 ' + r.connections + '개 · ' + r.total_ms + 'ms';
+      /* 요청을 하나씩, 실제로 보낸 순서대로 그린다. 새 연결을 맺은 요청은 선이 새로 그어진다 */
+      var chain = Promise.resolve();
+      r.requests.forEach(function (q, i) {
+        chain = chain.then(function () {
+          var first = q.sent.split('\r\n')[0];
+          sent.appendChild(el('span', 'first', first + '\n'));
+          sent.appendChild(el('span', q.connected_now ? 'len' : 'cut',
+            '  ' + (q.connected_now ? '새 연결 (connect)' : '앞 요청과 같은 연결') + ' · 클라이언트 포트 ' + q.client_port + ' · fd ' + q.client_fd + '\n'));
+          if (q.connected_now) {
+            $('edge-direct').classList.remove('active', 'res', 'err');
+            return sleep(180);
+          }
+          return null;
+        }).then(function () {
+          dotClass(dot, '');
+          markEdge('edge-direct');
+          return moveDot(dot, from, to, 260);
+        }).then(function () {
+          var ok = /^HTTP\/1\.\d 2/.test(q.status_line);
+          dotClass(dot, ok ? 'res' : 'err');
+          markEdge('edge-direct', ok ? 'res' : 'err');
+          got.appendChild(el('span', ok ? 'status-ok' : 'status-bad', q.status_line || '응답 없음'));
+          got.appendChild(el('span', 'len', '  ' + q.bytes + '바이트 · ' + q.ms + 'ms\n'));
+          return moveDot(dot, to, from, 260);
+        }).then(function () {
+          dotClass(dot, 'hidden');
+          setChip('client-chip', '요청 ' + (i + 1) + ' / ' + r.requests.length, 'ok');
+        });
+      });
+      return chain;
+    }).then(function () {
+      /* 캡처가 켜져 있으면 이 요청들의 패킷 수를 센다 (tcpdump가 줄을 쓰는 데 시간이 조금 걸린다) */
+      function poll(tries) {
+        return sleep(250).then(pullLogs).then(function (fresh) {
+          lines = lines.concat(fresh.tcpdump || []);
+          var fins = lines.filter(function (l) { return /Flags \[F/.test(l); }).length;
+          return !up.tcpdump || fins >= 2 * result.connections || tries <= 1 ? null : poll(tries - 1);
+        });
+      }
+      return poll(6);
+    }).then(function () {
+      var ports = {};
+      result.requests.forEach(function (q) { ports[q.client_port] = true; });
+      var packets = lines.map(parsePacket).filter(function (p) { return p && (ports[p.sport] || ports[p.dport]); });
+      var syn = packets.filter(function (p) { return p.flags === 'S'; }).length;
+      var summary = '연결 ' + result.connections + '개 · ' + result.total_ms + 'ms';
+      var text = keep
+        ? '요청 세 개가 연결 하나(같은 클라이언트 포트)로 갔다. 웹 서버 로그에 "이 연결의 2번째 요청", "3번째 요청"이 찍힌다.'
+        : '요청마다 connect를 새로 했다. 클라이언트 포트가 요청마다 다르고, 웹 서버는 요청마다 자식 프로세스를 새로 만들었다.';
+      if (packets.length) {
+        summary += ' · 패킷 ' + packets.length + '개';
+        text += ' 커널이 주고받은 패킷은 ' + packets.length + '개이고, 그중 연결을 맺는 SYN이 ' + syn + '개다.';
+      }
+      setChip('direct-note', summary, keep ? 'ok' : '');
+      showWhy(text);
+    }).then(refreshStatus);
+  }
+
+  /* ---------- 프록시의 keep-alive: 클라이언트 ↔ 프록시 연결 하나로 요청 세 개, 프록시 ↔ 백엔드는 요청마다 새 연결 ---------- */
+
+  function runMultiProxy(keep) {
+    setStage('proxy');
+    showWhy('');
+    var result;
+    var sent = $('sent');
+    var got = $('received');
+    return pullLogs().then(function () {
+      return call({ action: 'multi', port: 8080, keep: keep ? 1 : 0 });
+    }).then(function (r) {
+      if (!r.ok || r.error) { throw new Error(r.error || '요청을 보내지 못했다'); }
+      result = r;
+      return pullLogs();
+    }).then(function (fresh) {
+      /* 프록시 로그에 새로 찍힌 목적지 줄을 요청 순서대로 읽는다 */
+      /* "[Reverse] … → 주소" 뒤에 "[Failover] …" 줄이 오면 그 백엔드는 연결에 실패한 것이고, 같은 요청의 다음 [Reverse] 줄이 이어진다 */
+      var decisions = [];
+      var failed = [];
+      (fresh.proxy || []).forEach(function (l, i, all) {
+        if (!/^\[(Reverse|Forward)\] /.test(l)) { return; }
+        var d = readDecision([l]);
+        /* 사이에 "connect: Connection refused" 같은 줄이 낄 수 있으므로, 다음 [ ]로 시작하는 줄을 본다 */
+        var next = all.slice(i + 1).filter(function (x) { return /^\[(Reverse|Forward|Failover)\] /.test(x); })[0] || '';
+        if (/^\[Failover\] /.test(next)) { failed.push(d.port); return; }
+        d.failed = failed;
+        failed = [];
+        /* 이 요청이 백엔드와의 연결을 새로 맺었는지, 보관한 연결을 다시 썼는지: 다음 [Reverse] 줄 전의 [Pool] 줄을 본다 */
+        var rest = all.slice(i + 1);
+        var stop = rest.findIndex(function (x) { return /^\[(Reverse|Forward)\] /.test(x); });
+        var mine = stop === -1 ? rest : rest.slice(0, stop);
+        d.reused = mine.some(function (x) { return x.indexOf('[Pool]') === 0 && x.indexOf('보관한 연결을 다시 씀') > 0; }) &&
+          !mine.some(function (x) { return x.indexOf('[Pool]') === 0 && x.indexOf('새로 connect') > 0; });
+        decisions.push(d);
+      });
+      sent.className = '';
+      sent.textContent = '';
+      got.className = '';
+      got.textContent = '';
+      $('res-meta').textContent = '→ 8080 · 연결 ' + result.connections + '개 · ' + result.total_ms + 'ms';
+      var chain = Promise.resolve();
+      result.requests.forEach(function (q, i) {
+        chain = chain.then(function () {
+          var ok = /^HTTP\/1\.\d 2/.test(q.status_line);
+          sent.appendChild(el('span', 'first', q.sent.split('\r\n')[0] + '\n'));
+          sent.appendChild(el('span', q.connected_now ? 'len' : 'cut',
+            '  ' + (q.connected_now ? '새 연결 (connect)' : '앞 요청과 같은 연결') + ' · 클라이언트 포트 ' + q.client_port + ' · fd ' + q.client_fd + '\n'));
+          got.appendChild(el('span', ok ? 'status-ok' : 'status-bad', q.status_line || '응답 없음'));
+          got.appendChild(el('span', 'len', '  ' + q.bytes + '바이트 · ' + q.ms + 'ms\n'));
+          if (decisions[i] && decisions[i].port) {
+            got.appendChild(el('span', decisions[i].reused ? 'status-ok' : 'cut',
+              '  프록시 → 백엔드 ' + decisions[i].port + ': ' + (decisions[i].reused ? '보관한 연결을 다시 씀 (connect 없음)' : '새로 connect') + '\n'));
+          }
+          return animateProxy({ status: ok ? 200 : 502, status_line: q.status_line || 'HTTP/1.1 502 응답 없음' }, decisions[i] || null, true);
+        }).then(function () {
+          setChip('client-chip', '요청 ' + (i + 1) + ' / ' + result.requests.length, 'ok');
+          /* 이 요청에서 연결에 실패해 건너뛴 백엔드를 표시한다 */
+          ((decisions[i] || {}).failed || []).forEach(function (port) {
+            if ($('node-' + port)) { $('node-' + port).classList.add('fail'); }
+            setChip('proxy-note', '[Failover] ' + port + ' 연결 실패 → ' + decisions[i].text, 'bad');
+          });
+          return sleep(((decisions[i] || {}).failed || []).length ? 700 : 0);
+        });
+      });
+      return chain;
+    }).then(function () {
+      showWhy(keep
+        ? '클라이언트 프로세스는 connect를 한 번만 했다(클라이언트 포트가 같다). 프록시 프로세스는 요청마다 백엔드를 다시 고르고, 그 백엔드의 보관함에 쉬는 연결이 있으면 connect 없이 그것을 다시 썼다. 프록시 로그의 [Pool] 줄과, 백엔드 로그의 "이 연결의 2번째 요청"을 확인한다.'
+        : '클라이언트 프로세스가 요청마다 connect를 새로 했다(클라이언트 포트가 요청마다 다르다). 프록시 프로세스는 응답 뒤 클라이언트와의 연결을 닫았다. 백엔드와의 연결은 클라이언트와 상관없이 보관함에서 다시 쓴다.');
+    }).then(refreshStatus);
+  }
+
+  /* ---------- keep-alive: 요청 n개를 한꺼번에 보내 보관함에 연결 여러 개가 들어가게 한다 ---------- */
+
+  function runBurst(n) {
+    setStage('proxy');
+    clearMarks();
+    showWhy('');
+    setChip('client-chip', '', '');
+    setChip('proxy-note', '', '');
+    var result;
+    var sent = $('sent');
+    var got = $('received');
+    return pullLogs().then(function () {
+      return call({ action: 'burst', n: n });
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      result = r;
+      return sleep(150).then(pullLogs);
+    }).then(function (fresh) {
+      /* 프록시 로그의 [Reverse], [Pool] 줄을 백엔드별로 센다 */
+      var stat = {};
+      function at(port) { return stat[port] || (stat[port] = { req: 0, fresh: 0, reused: 0, kept: 0, full: 0 }); }
+      (fresh.proxy || []).forEach(function (line) {
+        var m = /^\[Reverse\] \S+ \S+ → 127\.0\.0\.1:(\d+)$/.exec(line);
+        if (m) { at(m[1]).req += 1; return; }
+        m = /^\[Pool\] 127\.0\.0\.1:(\d+) (.*)$/.exec(line);
+        if (!m) { return; }
+        if (m[2].indexOf('새로 connect') === 0) { at(m[1]).fresh += 1; }
+        else if (m[2].indexOf('보관한 연결을 다시 씀') === 0) { at(m[1]).reused += 1; }
+        else if (m[2].indexOf('연결을 닫지 않고 보관') === 0) { at(m[1]).kept += 1; }
+        else if (m[2].indexOf('보관함이 꽉 차서') === 0) { at(m[1]).full += 1; }
+      });
+      sent.className = '';
+      sent.textContent = '';
+      got.className = '';
+      got.textContent = '';
+      $('res-meta').textContent = '→ 8080 · 연결 ' + n + '개 · ' + result.total_ms + 'ms';
+      sent.appendChild(el('span', 'first', result.sent.split('\r\n')[0] + '  × ' + n + '\n'));
+      sent.appendChild(el('span', 'len', '  연결 ' + n + '개를 먼저 맺고(connect), 요청 ' + n + '개를 한꺼번에 write\n'));
+      got.appendChild(el('span', result.good === n ? 'status-ok' : 'status-bad', '200 OK ' + result.good + '개 / ' + n + '개'));
+      got.appendChild(el('span', 'len', '  ' + result.total_ms + 'ms\n'));
+      var ports = Object.keys(stat).sort();
+      var parts = [];
+      ports.forEach(function (port) {
+        var one = stat[port];
+        got.appendChild(el('span', 'cut', '  백엔드 ' + port + ': 요청 ' + one.req + '개 · 새로 connect ' + one.fresh + '번 · 보관한 연결 다시 씀 ' + one.reused + '번 · 보관함에 넣음 ' + one.kept + '번 · 꽉 차서 닫음 ' + one.full + '번\n'));
+        parts.push('백엔드 ' + port + ' 새로 connect ' + one.fresh + '번, 다시 씀 ' + one.reused + '번, 보관함에 넣음 ' + one.kept + '번, 꽉 차서 닫음 ' + one.full + '번');
+        if (counts[port] !== undefined) { counts[port] += one.req; }
+        if ($('node-' + port)) { $('node-' + port).classList.add('hit'); markEdge('edge-' + port, 'res'); }
+      });
+      markEdge('edge-client', 'res');
+      paintStatus();
+      setChip('client-chip', '200 OK × ' + result.good, result.good === n ? 'ok' : 'bad');
+      setChip('proxy-note', '연결 스레드 ' + n + '개가 같은 때에 처리', 'reverse');
+      showWhy('요청 ' + n + '개가 거의 같은 때에 와서, 프록시의 연결 스레드 ' + n + '개가 각자 백엔드와의 연결이 필요했다. 프록시 로그에서 센 값: ' + parts.join(' / ') + '. 보관함은 백엔드마다 4개까지다 (POOL_MAX 4).');
+    }).then(refreshStatus);
+  }
+
+  /* ---------- Response Caching: 프록시 로그의 [Cache] 줄을 읽어, 사본으로 응답했는지 백엔드까지 갔는지 그린다 ---------- */
+
+  function runCache(target) {
+    setStage('proxy');
+    showWhy('');
+    var result;
+    return pullLogs().then(function () {
+      return call({ action: 'send', to: 8080, raw: http('GET', target) });
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      result = r;
+      return pullLogs();
+    }).then(function (fresh) {
+      var lines = fresh.proxy || [];
+      var hit = lines.some(function (l) { return l.indexOf('[Cache] HIT ' + target) === 0; });
+      var stored = lines.some(function (l) { return l.indexOf('[Cache] 저장 ' + target) === 0; });
+      showExchange(result);
+      var ms = result.ms < 10 ? result.ms.toFixed(1) : Math.round(result.ms);
+      showWhy(hit
+        ? '이번 요청은 ' + ms + 'ms 걸렸다. 프록시 프로세스의 메모리에 같은 요청 대상(' + target + ')의 사본이 있어서, 백엔드에 연결하지 않고 사본을 보냈다 (hit). 백엔드 8004의 로그에는 새 줄이 없다.'
+        : '이번 요청은 ' + ms + 'ms 걸렸다. 사본이 없거나 만료돼서 백엔드 8004가 응답을 만들었다 (miss).' + (stored ? ' 프록시 프로세스가 그 응답을 사본으로 저장했다. 사본의 10초는 백엔드에 물어본 때부터 세므로, 지금부터 약 7초 안에 같은 버튼을 다시 누르면 hit이다.' : ''));
+      return animateProxy(result, hit ? { cacheHit: true, kind: 'Cache', host: null, port: null, text: '사본을 보냄' } : readDecision(lines), false);
+    }).then(refreshStatus);
+  }
+
+  /* ---------- Health Check와 Failover ---------- */
+
+  function apiReady() { return up[8001] && up[8003] && !excluded[8001] && !excluded[8003]; }
+
+  /* ① 백엔드 8003을 끈 직후, 헬스 체크가 알아채기 전에 /api/ 요청 세 개를 보낸다 */
+  function runGap() {
+    setStage('proxy');
+    showWhy('');
+    var ready = Promise.resolve();
+    if (!apiReady()) {
+      showWhy('준비: 꺼진 백엔드를 켜고, 프록시의 헬스 체크가 다시 순번에 넣기를 기다린다 (2초 안).');
+      ready = ensureUp([8001, 8003]);
+    }
+    return ready.then(function () {
+      showWhy('');
+      return call({ action: 'stop', port: 8003 });
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.error); }
+      up[8003] = false;
+      paintStatus();
+      return runMultiProxy(false);
+    }).then(function () {
+      showWhy('① Failover: 프록시 프로세스는 8003이 꺼진 줄 아직 모른다. 8003을 고른 요청은 connect가 실패했고, 프록시 프로세스가 8003을 바로 제외한 뒤 8001로 다시 연결해서 클라이언트는 200을 받았다 (프록시 로그의 [Failover] 줄).');
+    });
+  }
+
+  /* ② 제외된 뒤의 요청: 헬스 체크가 뺀 백엔드는 고르지 않는다 */
+  function runAfterExclude() {
+    var before = { 8001: counts[8001], 8003: counts[8003] };
+    showWhy('');
+    return sendMany(4).then(function () {
+      var a = counts[8001] - before[8001];
+      var b = counts[8003] - before[8003];
+      var outs = [8001, 8003].filter(function (port) { return excluded[port]; });
+      showWhy(outs.length
+        ? '② Health Check: 헬스 체크 스레드가 2초마다 백엔드에 connect해 본다. 연결되지 않는 백엔드 ' + outs.join(', ') + '은 순번에서 빠져 있어서 요청 네 개가 8001에 ' + a + '번, 8003에 ' + b + '번 갔다. connect 실패도, [Failover] 줄도 없다.'
+        : '두 백엔드가 모두 살아 있어서 번갈아 갔다 (8001에 ' + a + '번, 8003에 ' + b + '번). ①을 먼저 누르면 8003이 꺼진 상태에서 볼 수 있다.');
+    });
+  }
+
+  /* ③ 꺼진 백엔드를 다시 켠다. 헬스 체크의 connect가 성공하면 프록시가 다시 순번에 넣는다 */
+  function runRecover() {
+    var downs = [8001, 8003].filter(function (port) { return !up[port] || excluded[port]; });
+    if (!downs.length) {
+      showWhy('꺼진 백엔드가 없다. 8001, 8003 모두 순번에 들어 있다.');
+      return Promise.resolve();
+    }
+    showWhy('백엔드 ' + downs.join(', ') + '을 켜고, 헬스 체크 스레드의 다음 connect를 기다린다 (2초 안).');
+    return ensureUp([8001, 8003]).then(function () {
+      showWhy('③ 자동 복귀: 헬스 체크 스레드의 connect가 성공해서 백엔드 ' + downs.join(', ') + '이 다시 순번에 들어왔다 (프록시 로그의 "[Health] … 연결됨" 줄).');
+    }).then(refreshStatus);
+  }
+
+  /* ④ /api/ 의 백엔드 둘을 모두 끄고 요청을 보낸다: 남은 백엔드가 없으면 503 */
+  function runAllDown() {
+    setStage('proxy');
+    showWhy('');
+    return Promise.all([8001, 8003].filter(function (port) { return up[port]; }).map(function (port) {
+      return call({ action: 'stop', port: port }).then(function (r) {
+        if (!r.ok) { throw new Error(r.error); }
+        up[port] = false;
+      });
+    })).then(function () {
+      paintStatus();
+      return send(8080, http('GET', '/api/'), {
+        why: '④ 503 Service Unavailable: /api/ 의 백엔드 8001, 8003이 모두 꺼져 있다. 프록시 프로세스가 넘어갈 다음 백엔드가 없어서 503을 보냈다. ③을 누르면 다시 켠다.'
+      });
+    });
+  }
+
+  /* ---------- 프로세스 표: 웹 서버 프로세스의 자식, 손자 프로세스를 /proc 에서 읽어 좀비 프로세스가 남는지 본다 ---------- */
+
+  var STATE_NAME = { R: '실행 중', S: '기다리는 중', D: '기다리는 중', T: '멈춤', Z: '좀비 (끝났지만 부모가 아직 거두지 않음)' };
+
+  function pullProcs() {
+    var view = procView;
+    if (!view || procBusy) { return Promise.resolve(); }
+    /* fork 있음과 없음 장면에서 fork 없는 빌드(8005)를 실행했으면 그 프로세스를 본다 */
+    var target = current && current.key === 'fork' && directPort === 8005 ? 8005 : 8004;
+    if (view.target !== target) {
+      view.target = target;
+      view.seen = {};
+      view.gone = [];
+      view.last = '';
+    }
+    procBusy = true;
+    return call({ action: 'procs', name: target }).then(function (r) {
+      if (procView === view && view.target === target) { renderProcs(view, r); }
+    }).catch(function () {}).then(function () { procBusy = false; });
+  }
+
+  function renderProcs(view, r) {
+    var nofork = view.target === 8005;
+    var rows = [];
+    (r.children || []).forEach(function (c) {
+      rows.push({ pid: c.pid, state: c.state, comm: c.comm, depth: 1, role: nofork ? 'CGI 프로세스' : '자식 프로세스', reaper: nofork ? '웹 서버 프로세스' : '부모' });
+      (c.children || []).forEach(function (g) {
+        rows.push({ pid: g.pid, state: g.state, comm: g.comm, depth: 2, role: 'CGI 프로세스', reaper: '자식 프로세스 ' + c.pid });
+      });
+    });
+    var alive = {};
+    rows.forEach(function (row) {
+      alive[row.pid] = true;
+      if (!view.seen[row.pid]) { view.seen[row.pid] = { role: row.role, reaper: row.reaper, gone: false }; }
+    });
+    Object.keys(view.seen).forEach(function (pid) {
+      var one = view.seen[pid];
+      if (!alive[pid] && !one.gone) {
+        one.gone = true;
+        view.gone.unshift(one.role + ' ' + pid + ': 끝남 → 거둬짐 (waitpid를 부른 쪽: ' + one.reaper + ')');
+      }
+    });
+    var total = Object.keys(view.seen).length;
+    var zombies = rows.filter(function (row) { return row.state === 'Z'; }).length;
+    var key = JSON.stringify([r.up, r.pid, rows, total, view.gone.length]);
+    if (key === view.last) { return; }
+    view.last = key;
+
+    var box = view.box;
+    box.textContent = '';
+    if (!r.up) {
+      box.appendChild(el('div', 'empty', '웹 서버(포트 ' + view.target + ')가 꺼져 있다'));
+      return;
+    }
+    view.cmd.textContent = '$ ps --ppid ' + r.pid + ' -o pid,stat,comm';
+    box.appendChild(el('div', 'zombie ' + (zombies ? 'some' : 'none'), '좀비 프로세스 (상태 Z): ' + zombies + '개'));
+    box.appendChild(el('div', total ? '' : 'empty', total
+      ? '지금까지 생긴 프로세스 ' + total + '개 · ' + (view.gone.length ? '끝난 ' + view.gone.length + '개는 모두 거둬져 /proc 에서 사라졌다' : '아직 끝난 것이 없다')
+      : '버튼을 누르면 프로세스가 생겼다가 거둬지는 것을 여기서 본다'));
+    box.appendChild(el('div', 'step', '지금 /proc 에 있는 프로세스'));
+    box.appendChild(el('div', 'proc', '웹 서버 프로세스 ' + r.pid + ' (' + (nofork ? 'fork 없는 빌드' : '부모') + ', 포트 ' + view.target + ')'));
+    rows.forEach(function (row) {
+      var name = row.comm && row.comm !== 'server' && row.comm !== 'server-nofork' ? ' ' + row.comm : '';
+      box.appendChild(el('div', row.state === 'Z' ? 'zombie some' : 'live',
+        (row.depth === 1 ? '  └ ' : '      └ ') + row.role + ' ' + row.pid + name + '  ' + row.state + ' ' + (STATE_NAME[row.state] || '')));
+    });
+    if (!rows.length) { box.appendChild(el('div', 'note', '  └ (' + (nofork ? 'CGI' : '자식') + ' 프로세스 없음)')); }
+    if (view.gone.length) {
+      box.appendChild(el('div', 'step', '끝난 프로세스'));
+      view.gone.slice(0, 4).forEach(function (text) { box.appendChild(el('div', 'gone', text)); });
+    }
+    box.appendChild(el('div', 'note', nofork
+      ? 'fork 없는 빌드에서는 CGI 프로세스를 웹 서버 프로세스가 직접 waitpid(pid, &wstatus, 0)로 거둔다 (src/cgi.c의 run_cgi).'
+      : view.note));
+  }
+
+  /* ---------- 프록시의 백엔드 목록과 연결 보관함: 프록시 프로세스의 fd 표를 /proc 에서 읽는다 ---------- */
+
+  var POOL_MAX = 4;       /* proxy/proxy.h 의 POOL_MAX: 백엔드마다 보관하는 연결의 최대 개수 */
+  var POOL_IDLE_SEC = 4;  /* POOL_IDLE_MS 4000: 이보다 오래 쉰 연결은 꺼낼 때 닫는다 */
+
+  function pullPool() {
+    var view = poolView;
+    if (!view || poolBusy) { return Promise.resolve(); }
+    poolBusy = true;
+    return call({ action: 'procs', name: 'proxy' }).then(function (r) {
+      if (poolView === view) { renderPool(view, r); }
+    }).catch(function () {}).then(function () { poolBusy = false; });
+  }
+
+  /*
+   * 프록시 프로세스의 fd 중 소켓을 상대 포트로 나눈다.
+   *   상대 포트가 백엔드 포트   → 백엔드와의 연결. 요청을 처리하는 중이 아니면 보관함에서 쉬는 연결이다
+   *   프록시 쪽 포트가 8080      → 클라이언트와의 연결
+   * 소켓의 상태(ESTABLISHED, CLOSE_WAIT)는 커널의 TCP 소켓 목록(/proc/net/tcp)에서 읽은 값이다.
+   */
+  function renderPool(view, r) {
+    var box = view.box;
+    box.textContent = '';
+    if (!r.up) {
+      box.appendChild(el('div', 'empty', '프록시 프로세스가 꺼져 있다'));
+      return;
+    }
+    view.cmd.textContent = '$ ls -l /proc/' + r.pid + '/fd';
+    var now = Date.now();
+    var byPort = {};
+    var clients = [];
+    var alive = {};
+    (r.fds || []).forEach(function (f) {
+      var m = /^(ESTABLISHED|상태 (\w+)) 127\.0\.0\.1:(\d+) <-> 127\.0\.0\.1:(\d+)$/.exec(f.sock || '');
+      if (!m) { return; }
+      var local = Number(m[3]);
+      var remote = Number(m[4]);
+      var key = f.fd + ':' + local + ':' + remote;
+      alive[key] = true;
+      if (!view.seen[key]) { view.seen[key] = now; }
+      var row = { fd: f.fd, local: local, remote: remote, state: m[2] || '01', since: view.seen[key] };
+      if (local === 8080) { clients.push(row); }
+      else if (PROXY_BACKENDS.indexOf(remote) >= 0) { (byPort[remote] = byPort[remote] || []).push(row); }
+    });
+    Object.keys(view.seen).forEach(function (key) { if (!alive[key]) { delete view.seen[key]; } });
+
+    PROXY_BACKENDS.forEach(function (port) {
+      var rows = byPort[port] || [];
+      var slots = '';
+      for (var i = 0; i < POOL_MAX; i++) { slots += i < rows.length ? '■' : '□'; }
+      var head = el('div', 'proc');
+      head.appendChild(document.createTextNode('백엔드 ' + port + '  '));
+      head.appendChild(el('span', excluded[port] ? 'bad' : 'good', excluded[port] ? '제외됨' : '살아 있음'));
+      head.appendChild(document.createTextNode('  보관함 ' + slots + ' ' + rows.length + '/' + POOL_MAX));
+      box.appendChild(head);
+      rows.forEach(function (row) {
+        /* 쉬기 시작한 때: 이 연결을 처음 본 때와 마지막 요청이 끝난 때 중 늦은 쪽 (0.3초마다 읽으므로 대략의 값이다) */
+        var idle = (now - Math.max(row.since, lastActive)) / 1000;
+        var line = el('div');
+        line.appendChild(document.createTextNode('  fd ' + row.fd + ' · '));
+        if (row.state === '08') {
+          line.appendChild(el('span', 'bad', 'CLOSE_WAIT · 백엔드가 5초 idle로 먼저 끊음 → 꺼낼 때 닫음'));
+        } else if (row.state !== '01') {
+          line.appendChild(el('span', 'note', '상태 ' + row.state));
+        } else {
+          line.appendChild(el('span', idle < POOL_IDLE_SEC ? 'good' : 'live',
+            'ESTABLISHED · 쉰 지 약 ' + idle.toFixed(1) + '초' + (idle < POOL_IDLE_SEC ? ' → 다시 쓸 수 있음' : ' → 4초 넘음, 꺼낼 때 닫음')));
+        }
+        box.appendChild(line);
+      });
+    });
+    var c = el('div', 'proc', '클라이언트와의 연결 ' + clients.length + '개');
+    box.appendChild(c);
+    clients.forEach(function (row) {
+      box.appendChild(el('div', 'live', '  fd ' + row.fd + ' (클라이언트 포트 ' + row.remote + ')'));
+    });
+    box.appendChild(el('div', 'note', '프록시 프로세스 ' + r.pid + '의 fd 표에서 읽은 소켓. 보관함은 백엔드마다 ' + POOL_MAX + '개까지, ' + POOL_IDLE_SEC + '초 넘게 쉰 연결은 꺼낼 때 닫는다.'));
+  }
+
+  /* ---------- 시작 ---------- */
+
+  buildCats();
+  var saved = null;
+  try { saved = localStorage.getItem('lab-scene'); } catch (e) { /* 저장된 것이 없으면 첫 장면부터 */ }
+  showScene(SCENES[saved] ? saved : 'fd');
+  refreshStatus();
+  setInterval(function () { if (!busy && !preparing) { refreshStatus(); pullLogs().catch(function () {}); } }, 2000);
+  /* 프로세스 표는 자식 프로세스가 생겼다가 사라지는 짧은 순간을 보여 줘야 하므로 0.3초마다 읽는다 (표가 있는 장면에서만) */
+  setInterval(function () { pullProcs(); pullPool(); }, 300);
+})();

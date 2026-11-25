@@ -77,6 +77,7 @@ int main(int argc, char *argv[])
     }
 
     /* SA_RESTART: 자식 프로세스가 끝난 것 때문에 accept가 중단되지 않게 한다 */
+#ifndef NO_FORK
     struct sigaction sa_child;
     sa_child.sa_handler = reap_children;
     sigemptyset(&sa_child.sa_mask);
@@ -85,6 +86,10 @@ int main(int argc, char *argv[])
         perror("sigaction");
         return 1;
     }
+#else
+    /* fork 없는 빌드에서는 run_cgi의 waitpid가 CGI 프로세스를 직접 거두므로 SIGCHLD 핸들러를 달지 않는다 */
+    (void)reap_children;
+#endif
 
     int port = DEFAULT_PORT;
     const char *root = DEFAULT_ROOT;
@@ -134,6 +139,17 @@ int main(int argc, char *argv[])
             /* 시그널로 중단된 경우도 여기로 온다. 반복 조건을 다시 확인한다 */
             continue;
         }
+
+#ifdef NO_FORK
+        /*
+         * 비교용 빌드(-DNO_FORK, build/server-nofork): fork하지 않고 웹 서버 프로세스가 직접 연결을 처리한다.
+         * 이 연결의 처리가 끝날 때까지 accept로 돌아가지 못하므로, 다음 클라이언트는 그동안 기다린다.
+         */
+        handle_connection(conn_fd, root);
+        close(conn_fd);
+        printf("연결을 닫았습니다 (fork 없음: 웹 서버 프로세스 %d가 직접 처리)\n", (int)getpid());
+        continue;
+#endif
 
         pid_t pid = fork();
         if (pid == -1) {

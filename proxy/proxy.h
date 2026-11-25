@@ -13,6 +13,7 @@
 #define PREFIX_SIZE 64
 #define MAX_CACHE_PREFIXES 8
 #define HOST_SIZE 64
+#define MAX_ALLOWED 8
 #define HEALTH_INTERVAL_SEC 2 /* 헬스 체크 스레드가 모든 백엔드를 한 번 검사한 뒤 쉬는 시간 */
 #define POOL_MAX 4      /* 백엔드 하나에 보관하는 쉬는 연결의 최대 개수. 꽉 차면 보관하지 않고 닫는다 */
 #define POOL_IDLE_MS 4000 /* 이 시간 넘게 쉰 연결은 다시 쓰지 않고 닫는다. 백엔드가 5초 쉰 연결을 먼저 닫기 때문에 그보다 짧게 잡는다 */
@@ -43,6 +44,9 @@ struct route {
 struct proxy_config {
     struct route routes[MAX_ROUTES];
     int route_count;
+    /* Forward Proxy 허용 목록. allowed_count가 0이면 어느 서버로든 보낸다. port가 0이면 그 주소의 모든 포트 */
+    struct backend allowed[MAX_ALLOWED];
+    int allowed_count;
     char cache_prefixes[MAX_CACHE_PREFIXES][PREFIX_SIZE]; /* 응답을 캐시에 저장할 경로의 접두사 ("cache 접두사" 줄) */
     int cache_count;
 };
@@ -50,6 +54,7 @@ struct proxy_config {
 /*
  * 설정 파일을 읽어 cfg를 채운다. 한 줄에 규칙 하나: "접두사 주소:포트 [주소:포트 ...]"
  * 예) "/api/ 127.0.0.1:8001 127.0.0.1:8003".  빈 줄과 '#'로 시작하는 줄은 건너뛴다.
+ * "allow 주소[:포트]" 줄은 Forward Proxy가 보내도 되는 서버를 적는다. 한 줄도 없으면 모든 서버를 허용한다.
  * "cache 접두사" 줄은 그 접두사로 시작하는 경로의 응답을 캐시에 저장하라는 뜻이다. 예) "cache /static/"
  * 성공하면 0. 파일을 열 수 없거나 형식이 틀리면 원인을 출력하고 -1.
  */
@@ -83,6 +88,9 @@ void check_backends(struct proxy_config *cfg);
  * 성공하면 0. "http://"로 시작하지 않거나 주소가 비었거나 포트가 틀리면 -1.
  */
 int parse_absolute_url(const char *target, struct backend *dest, const char **path);
+
+/* Forward Proxy가 dest로 보내도 되는지. 허용 목록이 비어 있으면 항상 1 */
+int is_allowed(const struct proxy_config *cfg, const struct backend *dest);
 
 /* 보관함이 읽는 시계: 지금 시각을 밀리초로 돌려준다. 보통은 CLOCK_MONOTONIC이고, 테스트가 다른 함수로 바꿔 낄 수 있다 */
 extern long long (*pool_clock)(void);
